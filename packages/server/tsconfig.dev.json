@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "rootDir": null,
+    "baseUrl": ".",
+    "paths": {
+      "@lordcode/shared": ["../shared/src/index.ts"],
+      "@lordcode/shared/*": ["../shared/src/*"]
+    }
+  },
+  "references": []
+}

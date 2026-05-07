@@ -1,0 +1,24 @@
+{
+  "name": "lordcode",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A local coding agent with TUI and embedded HTTP server",
+  "type": "module",
+  "engines": {
+    "node": ">=20.10"
+  },
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "dev": "pnpm --filter @lordcode/tui dev",
+    "dev:server": "pnpm --filter @lordcode/server dev",
+    "build": "pnpm -r --filter './packages/*' build",
+    "typecheck": "pnpm -r --filter './packages/*' typecheck",
+    "lint": "pnpm -r --filter './packages/*' lint",
+    "clean": "pnpm -r --filter './packages/*' clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

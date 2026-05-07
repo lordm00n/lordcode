@@ -1,0 +1,16 @@
+{
+  "name": "@lordcode/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Web UI for lordcode (placeholder, not implemented yet)",
+  "scripts": {
+    "dev": "echo 'web ui not implemented yet' && exit 0",
+    "build": "echo 'web ui not implemented yet' && exit 0",
+    "typecheck": "echo 'web ui not implemented yet' && exit 0",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@lordcode/shared": "workspace:*"
+  }
+}
