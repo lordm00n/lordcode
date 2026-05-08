@@ -1,21 +1,46 @@
 import { Hono } from "hono";
-import type { AgentChatRequest, AgentChatResponse } from "@lordcode/shared";
+import { streamSSE } from "hono/streaming";
+import type {
+  AgentChatRequest,
+  AgentStreamEvent,
+  ChatMessage,
+} from "@lordcode/shared";
 import type { AppDeps } from "../app.js";
-import { runAgent } from "../agent/index.js";
+import { streamAgent } from "../agent/index.js";
 
 export function agentRoute(deps: AppDeps) {
   const route = new Hono();
 
   route.post("/chat", async (c) => {
-    const body = (await c.req.json()) as AgentChatRequest;
+    let body: AgentChatRequest;
+    try {
+      body = (await c.req.json()) as AgentChatRequest;
+    } catch {
+      return c.json({ error: "request body must be JSON" }, 400);
+    }
 
     if (!Array.isArray(body?.messages)) {
       return c.json({ error: "messages must be an array" }, 400);
     }
+    const messages: ChatMessage[] = body.messages;
 
-    const message = await runAgent(body.messages, { logger: deps.logger });
-    const response: AgentChatResponse = { message };
-    return c.json(response);
+    return streamSSE(c, async (stream) => {
+      const signal = c.req.raw.signal;
+      try {
+        for await (const ev of streamAgent(messages, {
+          store: deps.configStore,
+          signal,
+        })) {
+          await stream.writeSSE({ data: JSON.stringify(ev) });
+        }
+      } catch (err) {
+        if (signal.aborted) return;
+        const message = err instanceof Error ? err.message : String(err);
+        const errorEvent: AgentStreamEvent = { type: "error", message };
+        await stream.writeSSE({ data: JSON.stringify(errorEvent) });
+        deps.logger.error("agent stream failed", err);
+      }
+    });
   });
 
   return route;

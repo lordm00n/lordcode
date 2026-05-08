@@ -3,12 +3,15 @@ import { logger } from "hono/logger";
 import { cors } from "hono/cors";
 import { healthRoute } from "./routes/health.js";
 import { agentRoute } from "./routes/agent.js";
+import { modelsRoute } from "./routes/models.js";
 import type { Logger } from "./lib/logger.js";
+import type { ConfigStore } from "./config/store.js";
 
 export interface AppDeps {
   logger: Logger;
   startedAt: number;
   version: string;
+  configStore: ConfigStore;
 }
 
 export function createApp(deps: AppDeps) {
@@ -22,6 +25,7 @@ export function createApp(deps: AppDeps) {
 
   app.route("/health", healthRoute(deps));
   app.route("/agent", agentRoute(deps));
+  app.route("/models", modelsRoute(deps));
 
   app.notFound((c) => c.json({ error: "Not Found" }, 404));
   app.onError((err, c) => {

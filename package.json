@@ -13,6 +13,7 @@
     "dev:server": "pnpm --filter @lordcode/server dev",
     "build": "pnpm -r --filter './packages/*' build",
     "typecheck": "pnpm -r --filter './packages/*' typecheck",
+    "test": "pnpm -r --filter './packages/*' test",
     "lint": "pnpm -r --filter './packages/*' lint",
     "clean": "pnpm -r --filter './packages/*' clean && rm -rf node_modules"
   },

@@ -5,3 +5,16 @@ export type { App, AppDeps } from "./app.js";
 export { createLogger } from "./lib/logger.js";
 export type { Logger, LogLevel } from "./lib/logger.js";
 export { VERSION } from "./version.js";
+export {
+  ConfigStore,
+  ModelNotFoundError,
+  parseConfig,
+  ConfigParseError,
+  getConfigPath,
+  ensureConfigDir,
+} from "./config/index.js";
+export {
+  streamAgent,
+  resolveApiKey,
+  resolveLanguageModel,
+} from "./agent/index.js";
