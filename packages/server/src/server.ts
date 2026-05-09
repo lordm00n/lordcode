@@ -1,14 +1,20 @@
 import { serve } from "@hono/node-server";
 import type { AddressInfo } from "node:net";
+import type { Logger } from "@lordcode/logger";
 import { createApp } from "./app.js";
-import { createLogger, type LogLevel } from "./lib/logger.js";
 import { VERSION } from "./version.js";
 import { ConfigStore } from "./config/store.js";
 
 export interface StartServerOptions {
   port?: number;
   host?: string;
-  logLevel?: LogLevel;
+  /**
+   * Required. Caller (worker / server-only `main.ts`) opens the file
+   * transport and roots the logger; we just route deeper. Passing a logger
+   * already child-named with `.child("server")` is the convention so all
+   * channels surface as `server:...`.
+   */
+  logger: Logger;
   /** Override `~` for the config file lookup. Used by tests. */
   home?: string;
 }
@@ -22,16 +28,18 @@ export interface RunningServer {
 }
 
 export async function startServer(
-  opts: StartServerOptions = {},
+  opts: StartServerOptions,
 ): Promise<RunningServer> {
   const port = opts.port ?? 0;
   const host = opts.host ?? "127.0.0.1";
-  const logger = createLogger(opts.logLevel ?? "info");
+  const logger = opts.logger;
+  const bootLog = logger.child("boot");
   const startedAt = Date.now();
 
-  const configStore = await ConfigStore.load(
-    opts.home ? { home: opts.home } : {},
-  );
+  const configStore = await ConfigStore.load({
+    ...(opts.home ? { home: opts.home } : {}),
+    logger,
+  });
 
   const app = createApp({
     logger,
@@ -51,7 +59,7 @@ export async function startServer(
   const boundPort = address.port;
   const baseUrl = `http://${host}:${boundPort}`;
 
-  logger.info(`server listening on ${baseUrl}`);
+  bootLog.info("server listening", { url: baseUrl });
 
   return {
     baseUrl,
@@ -60,7 +68,16 @@ export async function startServer(
     configStore,
     close: () =>
       new Promise<void>((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
+        bootLog.debug("server closing");
+        server.close((err) => {
+          if (err) {
+            bootLog.error("server close failed", err);
+            reject(err);
+          } else {
+            bootLog.info("server closed");
+            resolve();
+          }
+        });
       }),
   };
 }

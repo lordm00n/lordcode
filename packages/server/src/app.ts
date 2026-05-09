@@ -1,13 +1,22 @@
 import { Hono } from "hono";
-import { logger } from "hono/logger";
+import { logger as honoLogger } from "hono/logger";
 import { cors } from "hono/cors";
+import type { Logger } from "@lordcode/logger";
 import { healthRoute } from "./routes/health.js";
 import { agentRoute } from "./routes/agent.js";
 import { modelsRoute } from "./routes/models.js";
-import type { Logger } from "./lib/logger.js";
 import type { ConfigStore } from "./config/store.js";
 
 export interface AppDeps {
+  /**
+   * Server-rooted logger. App-internal channels are derived as
+   *   `deps.logger.child("http")`         -- hono/logger middleware
+   *   `deps.logger.child("route").child("agent")`
+   *   `deps.logger.child("agent").child("stream")`
+   *   …
+   * Callers are expected to hand in something already named with
+   * `.child("server")` so the channel paths come out as `server:...`.
+   */
   logger: Logger;
   startedAt: number;
   version: string;
@@ -16,10 +25,20 @@ export interface AppDeps {
 
 export function createApp(deps: AppDeps) {
   const app = new Hono();
+  const httpLog = deps.logger.child("http");
 
   app.use(
     "*",
-    logger((message, ...rest) => deps.logger.debug(message, ...rest)),
+    honoLogger((message, ...rest) => {
+      // hono/logger emits a single human-readable string; we attach the
+      // remainder as a single `extra` meta field so structured grep still
+      // works on the channel.
+      if (rest.length > 0) {
+        httpLog.debug(message, { extra: rest });
+      } else {
+        httpLog.debug(message);
+      }
+    }),
   );
   app.use("*", cors());
 
@@ -29,7 +48,7 @@ export function createApp(deps: AppDeps) {
 
   app.notFound((c) => c.json({ error: "Not Found" }, 404));
   app.onError((err, c) => {
-    deps.logger.error("Unhandled error", err);
+    deps.logger.error("unhandled error", err);
     return c.json({ error: err.message }, 500);
   });
 

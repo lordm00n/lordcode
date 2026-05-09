@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { ChatMessage, ModelsListResponse } from "@lordcode/shared";
 import type { ApiClient } from "../api/client.js";
 import { parseCommand } from "../lib/commands.js";
+import { useLogger } from "../lib/logger-context.js";
 
 interface AppProps {
   api: ApiClient;
@@ -52,6 +53,11 @@ const REASONING_COLLAPSE_LINES = 8;
 
 export function App({ api, baseUrl, onExit }: AppProps) {
   const ink = useApp();
+  const baseLog = useLogger();
+  // Stable child loggers — avoid re-deriving on every render so that effects
+  // / callbacks can use them in dep arrays without resubscribing.
+  const log = useMemo(() => baseLog.child("ui"), [baseLog]);
+  const cmdLog = useMemo(() => baseLog.child("cmd"), [baseLog]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [input, setInput] = useState("");
   const [models, setModels] = useState<ModelsListResponse | null>(null);
@@ -64,11 +70,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       try {
         const m = await api.listModels();
         setModels(m);
+        log.debug("initial models loaded", {
+          count: m.models.length,
+          current: m.current ?? null,
+        });
       } catch (err) {
         setModelsError(err instanceof Error ? err.message : String(err));
+        log.error("initial models load failed", err);
       }
     })();
-  }, [api]);
+  }, [api, log]);
 
   const pushSystem = useCallback(
     (tone: "info" | "error", content: string) => {
@@ -94,32 +105,39 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   );
 
   const handleModels = useCallback(async () => {
+    log.debug("/models requested");
     try {
       const m = await api.listModels();
       setModels(m);
       pushSystem("info", formatModelsList(m));
     } catch (err) {
+      log.error("/models failed", err);
       pushSystem(
         "error",
         `failed to list models: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
-  }, [api, pushSystem]);
+  }, [api, log, pushSystem]);
 
   const handleSetModel = useCallback(
     async (name: string) => {
+      log.info("/model requested", { name });
       try {
         const res = await api.setCurrentModel(name);
         setModels((prev) => (prev ? { ...prev, current: res.current } : prev));
         pushSystem("info", `switched to ${res.current}`);
       } catch (err) {
+        log.warn("/model failed", {
+          name,
+          err: err instanceof Error ? err.message : String(err),
+        });
         pushSystem(
           "error",
           err instanceof Error ? err.message : String(err),
         );
       }
     },
-    [api, pushSystem],
+    [api, log, pushSystem],
   );
 
   const handleSend = useCallback(
@@ -132,6 +150,11 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         .filter((e): e is MessageEntry => e.kind === "msg")
         .map((e) => ({ role: e.role, content: e.content }));
       setEntries(baseEntries);
+
+      log.debug("send", {
+        messages: messages.length,
+        len: text.length,
+      });
 
       const stream = api.chat({ messages });
       abortRef.current = stream.abort;
@@ -174,6 +197,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
             accReasoning = "";
             reasoningStartedAt = null;
             reasoningDurationMs = null;
+            log.debug("stream: start", { model: ev.model });
             setStreaming(snapshot());
           } else if (ev.type === "delta") {
             acc += ev.text;
@@ -201,6 +225,13 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           } else if (ev.type === "finish") {
             closeReasoning();
             const suffix = ev.aborted ? "\n[interrupted]" : "";
+            log.debug("stream: finish", {
+              len: acc.length,
+              ...(ev.finishReason ? { finishReason: ev.finishReason } : {}),
+              ...(reasoningDurationMs != null
+                ? { reasoningMs: reasoningDurationMs }
+                : {}),
+            });
             pushMessage(
               { role: "assistant", content: acc + suffix },
               reasoningDurationMs != null ? { reasoningDurationMs } : undefined,
@@ -209,11 +240,13 @@ export function App({ api, baseUrl, onExit }: AppProps) {
             return;
           } else if (ev.type === "error") {
             errorMsg = ev.message;
+            log.warn("stream: error frame", { message: ev.message });
             break;
           }
         }
       } catch (err) {
         errorMsg = err instanceof Error ? err.message : String(err);
+        log.error("stream: threw", err);
       } finally {
         abortRef.current = null;
       }
@@ -240,15 +273,17 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           reasoningOpts,
         );
       } else if (!receivedStart) {
+        log.warn("stream ended without any output");
         pushSystem("error", "stream ended without any output");
       }
       setStreaming(null);
     },
-    [api, entries, pushMessage, pushSystem],
+    [api, entries, log, pushMessage, pushSystem],
   );
 
   useInput((char, key) => {
     if (key.ctrl && (char === "c" || char === "d")) {
+      log.info("ctrl-c/d pressed; exiting");
       abortRef.current?.();
       ink.exit();
       onExit();
@@ -257,6 +292,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
 
     if (streaming != null) {
       if (key.escape) {
+        log.info("esc pressed during stream; aborting");
         abortRef.current?.();
       }
       return;
@@ -278,6 +314,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           void handleSetModel(cmd.name);
           break;
         case "invalid":
+          cmdLog.warn("invalid command", { reason: cmd.reason });
           pushSystem("error", cmd.reason);
           break;
       }

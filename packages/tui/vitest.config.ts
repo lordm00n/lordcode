@@ -8,6 +8,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@lordcode/shared": fromHere("../shared/src/index.ts"),
+      "@lordcode/logger/node": fromHere("../logger/src/node.ts"),
+      "@lordcode/logger": fromHere("../logger/src/index.ts"),
     },
   },
   test: {

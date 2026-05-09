@@ -1,4 +1,5 @@
 import { streamText as defaultStreamText, type LanguageModel } from "ai";
+import type { Logger } from "@lordcode/logger";
 import type {
   AgentStreamEvent,
   ChatMessage,
@@ -20,7 +21,7 @@ export interface FullStreamChunk {
   type: string;
   /** Present on `text-delta` and `reasoning-delta`. */
   text?: string;
-  /** Present on `error` chunks (fullStream surfaces non-fatal errors as data). */
+  /** Present on `error` chunks (fullStream surfaces non-fatal provider errors as data). */
   error?: unknown;
 }
 
@@ -46,6 +47,12 @@ export type StreamTextFn = (args: {
 export interface StreamAgentContext {
   store: Pick<ConfigStore, "getCurrent">;
   signal?: AbortSignal;
+  /**
+   * Channel-rooted logger for this turn. Optional so unit tests don't need to
+   * wire one up. Caller convention: pass `serverLog.child("agent").child("stream")`
+   * so per-frame debug lines surface as `server:agent:stream`.
+   */
+  logger?: Logger;
   /** test seam: override how the LanguageModel is constructed */
   resolveLanguageModel?: (cfg: ModelConfig, apiKey: string) => LanguageModel;
   /** test seam: override apiKey resolution */
@@ -68,8 +75,16 @@ export async function* streamAgent(
   messages: ChatMessage[],
   ctx: StreamAgentContext,
 ): AsyncGenerator<AgentStreamEvent, void, void> {
+  const log = ctx.logger;
+  const apiKeyLog = log
+    ? // siblings under `server:agent`, not under `server:agent:stream`
+      log.child("apikey")
+    : undefined;
+  const providerLog = log ? log.child("provider") : undefined;
+
   const cfg = ctx.store.getCurrent();
   if (!cfg) {
+    log?.warn("no model selected");
     yield {
       type: "error",
       message: "no model selected (set one with /model <name>)",
@@ -77,9 +92,10 @@ export async function* streamAgent(
     return;
   }
 
-  const resolveKey = ctx.resolveApiKey ?? defaultResolveApiKey;
+  const resolveKey = ctx.resolveApiKey ?? ((c: ModelConfig) => defaultResolveApiKey(c, apiKeyLog));
   const apiKey = resolveKey(cfg);
   if (apiKey == null) {
+    log?.warn("apiKey missing for current model", { model: cfg.name });
     yield {
       type: "error",
       message: missingApiKeyMessage(cfg),
@@ -88,10 +104,12 @@ export async function* streamAgent(
   }
 
   if (ctx.signal?.aborted) {
+    log?.debug("aborted before stream start");
     return;
   }
 
-  const resolveModel = ctx.resolveLanguageModel ?? defaultResolveLanguageModel;
+  const resolveModel =
+    ctx.resolveLanguageModel ?? ((c, k) => defaultResolveLanguageModel(c, k, providerLog));
   const runStream =
     ctx.streamText ?? (defaultStreamText as unknown as StreamTextFn);
 
@@ -104,33 +122,45 @@ export async function* streamAgent(
       ...(ctx.signal ? { abortSignal: ctx.signal } : {}),
     });
   } catch (err) {
+    log?.error("streamText setup failed", err, { model: cfg.name });
     yield { type: "error", message: errorMessage(err) };
     return;
   }
 
+  log?.debug("stream started", {
+    model: cfg.name,
+    messages: messages.length,
+  });
   yield { type: "start", model: cfg.name };
 
   try {
     for await (const chunk of result.fullStream) {
-      if (ctx.signal?.aborted) return;
+      if (ctx.signal?.aborted) {
+        log?.debug("aborted mid-stream");
+        return;
+      }
       switch (chunk.type) {
         case "text-delta": {
           const text = chunk.text ?? "";
           if (text.length === 0) break;
+          log?.debug("chunk", { type: "text-delta", len: text.length });
           yield { type: "delta", text };
           break;
         }
         case "reasoning-start": {
+          log?.debug("chunk", { type: "reasoning-start" });
           yield { type: "reasoning-start" };
           break;
         }
         case "reasoning-delta": {
           const text = chunk.text ?? "";
           if (text.length === 0) break;
+          log?.debug("chunk", { type: "reasoning-delta", len: text.length });
           yield { type: "reasoning-delta", text };
           break;
         }
         case "reasoning-end": {
+          log?.debug("chunk", { type: "reasoning-end" });
           yield { type: "reasoning-end" };
           break;
         }
@@ -143,7 +173,15 @@ export async function* streamAgent(
           // (stream-text.ts forwards at line 870 before validating), so the
           // payload is already in our hands; if we propagate the error we'd kill
           // an otherwise-healthy turn. Treat them as warnings and continue.
-          if (isRecoverableSdkError(chunk.error)) break; // HACK: This is a workaround for a bug in the SDK.
+          if (isRecoverableSdkError(chunk.error)) {
+            log?.debug("chunk: recoverable sdk error (suppressed)", {
+              err: errorMessage(chunk.error),
+            });
+            break; // HACK: This is a workaround for a bug in the SDK.
+          }
+          log?.warn("chunk: provider error", {
+            err: errorMessage(chunk.error),
+          });
           yield { type: "error", message: errorMessage(chunk.error) };
           return;
         }
@@ -156,7 +194,11 @@ export async function* streamAgent(
       }
     }
   } catch (err) {
-    if (ctx.signal?.aborted) return;
+    if (ctx.signal?.aborted) {
+      log?.debug("threw post-abort, suppressed");
+      return;
+    }
+    log?.error("stream iterator threw", err);
     yield { type: "error", message: errorMessage(err) };
     return;
   }
@@ -177,6 +219,10 @@ export async function* streamAgent(
       cleaned.outputTokens = usage.outputTokens;
     if (Object.keys(cleaned).length > 0) finish.usage = cleaned;
   }
+  log?.debug("stream finished", {
+    ...(finishReason ? { finishReason } : {}),
+    ...(finish.usage ? { usage: finish.usage } : {}),
+  });
   yield finish;
 }
 

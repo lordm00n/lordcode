@@ -8,7 +8,9 @@
       "@lordcode/shared": ["../shared/src/index.ts"],
       "@lordcode/shared/*": ["../shared/src/*"],
       "@lordcode/server": ["../server/src/index.ts"],
-      "@lordcode/server/*": ["../server/src/*"]
+      "@lordcode/server/*": ["../server/src/*"],
+      "@lordcode/logger": ["../logger/src/index.ts"],
+      "@lordcode/logger/node": ["../logger/src/node.ts"]
     }
   },
   "references": []

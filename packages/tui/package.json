@@ -17,6 +17,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@lordcode/logger": "workspace:*",
     "@lordcode/server": "workspace:*",
     "@lordcode/shared": "workspace:*",
     "eventsource-parser": "^3.0.8",

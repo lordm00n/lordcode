@@ -1,5 +1,6 @@
 import { readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { Logger } from "@lordcode/logger";
 import type {
   LordcodeConfig,
   ModelConfig,
@@ -29,10 +30,14 @@ export class ConfigStore {
   private constructor(
     private state: { config: LordcodeConfig; current: string | null },
     private readonly filePath: string,
+    private readonly logger: Logger | undefined,
   ) {}
 
-  static async load(opts: { home?: string } = {}): Promise<ConfigStore> {
+  static async load(
+    opts: { home?: string; logger?: Logger } = {},
+  ): Promise<ConfigStore> {
     const filePath = getConfigPath(opts.home);
+    const log = opts.logger?.child("config");
     await ensureConfigDir(opts.home);
 
     let raw: string;
@@ -40,24 +45,42 @@ export class ConfigStore {
       raw = await readFile(filePath, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        log?.info("config not found, writing skeleton", { path: filePath });
         await atomicWriteJson(filePath, SKELETON);
-        const store = new ConfigStore(
+        return new ConfigStore(
           { config: structuredClone(SKELETON), current: null },
           filePath,
+          opts.logger,
         );
-        return store;
       }
+      log?.error("config read failed", err, { path: filePath });
       throw err;
     }
 
-    const parsed = parseConfig(raw);
+    let parsed: LordcodeConfig;
+    try {
+      parsed = parseConfig(raw);
+    } catch (err) {
+      log?.error("config parse/validate failed", err, { path: filePath });
+      throw err;
+    }
     const { normalised, changed } = normaliseCurrent(parsed);
     if (changed) {
+      log?.info("config currentModel normalised", {
+        from: parsed.currentModel ?? null,
+        to: normalised.currentModel ?? null,
+      });
       await atomicWriteJson(filePath, normalised);
     }
+    log?.debug("config loaded", {
+      path: filePath,
+      models: normalised.models.length,
+      current: normalised.currentModel ?? null,
+    });
     return new ConfigStore(
       { config: normalised, current: normalised.currentModel ?? null },
       filePath,
+      opts.logger,
     );
   }
 
@@ -88,16 +111,27 @@ export class ConfigStore {
   }
 
   async setCurrent(name: string): Promise<ModelConfig> {
+    const log = this.logger?.child("config");
     const found = this.state.config.models.find((m) => m.name === name);
     if (!found) {
+      log?.warn("setCurrent: unknown model", {
+        name,
+        available: this.availableNames(),
+      });
       throw new ModelNotFoundError(name, this.availableNames());
     }
     const next: LordcodeConfig = {
       ...this.state.config,
       currentModel: name,
     };
-    await atomicWriteJson(this.filePath, next);
+    try {
+      await atomicWriteJson(this.filePath, next);
+    } catch (err) {
+      log?.error("setCurrent: write failed", err, { path: this.filePath });
+      throw err;
+    }
     this.state = { config: next, current: name };
+    log?.info("currentModel updated", { name });
     return found;
   }
 }

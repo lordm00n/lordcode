@@ -9,8 +9,8 @@
   },
   "packageManager": "pnpm@10.17.1",
   "scripts": {
-    "dev": "pnpm --filter @lordcode/tui dev",
-    "dev:server": "pnpm --filter @lordcode/server dev",
+    "dev": "cross-env LORDCODE_DEBUG=1 pnpm --filter @lordcode/tui dev",
+    "dev:server": "cross-env LORDCODE_DEBUG=1 pnpm --filter @lordcode/server dev",
     "build": "pnpm -r --filter './packages/*' build",
     "typecheck": "pnpm -r --filter './packages/*' typecheck",
     "test": "pnpm -r --filter './packages/*' test",
@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
+    "cross-env": "^7.0.3",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }

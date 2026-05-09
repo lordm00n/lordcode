@@ -31,13 +31,31 @@ function resolveWorkerEntry(): URL {
   return new URL(workerExport, new URL(pkgPath, import.meta.url));
 }
 
+/**
+ * Subset of `ServerWorkerOptions` the host actually needs from callers. The
+ * worker requires `debugLogPath`, `level`, and `mode`; everything else
+ * (port/host) gets sane defaults.
+ */
+export interface StartServerWorkerOptions {
+  port?: number;
+  host?: string;
+  /** Absolute path the worker will append its log file to. */
+  debugLogPath: string;
+  /** Severity passed straight through to the worker's logger. */
+  level: ServerWorkerOptions["level"];
+  /** Forwarded to worker for diagnostic context (no run header rewrite). */
+  mode: ServerWorkerOptions["mode"];
+}
+
 export function startServerWorker(
-  opts: Partial<ServerWorkerOptions> = {},
+  opts: StartServerWorkerOptions,
 ): Promise<ServerHostHandle & { worker: Worker }> {
   const workerOptions: ServerWorkerOptions = {
     port: opts.port ?? 0,
     host: opts.host ?? "127.0.0.1",
-    logLevel: opts.logLevel ?? "silent",
+    debugLogPath: opts.debugLogPath,
+    level: opts.level,
+    mode: opts.mode,
   };
 
   const entry = resolveWorkerEntry();

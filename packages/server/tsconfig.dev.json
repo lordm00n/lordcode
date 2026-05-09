@@ -6,7 +6,9 @@
     "baseUrl": ".",
     "paths": {
       "@lordcode/shared": ["../shared/src/index.ts"],
-      "@lordcode/shared/*": ["../shared/src/*"]
+      "@lordcode/shared/*": ["../shared/src/*"],
+      "@lordcode/logger": ["../logger/src/index.ts"],
+      "@lordcode/logger/node": ["../logger/src/node.ts"]
     }
   },
   "references": []
