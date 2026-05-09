@@ -5,7 +5,11 @@ import type {
   ChatMessage,
   ModelConfig,
 } from "@lordcode/shared";
-import { streamAgent, type StreamTextLike } from "./stream.js";
+import {
+  streamAgent,
+  type FullStreamChunk,
+  type StreamTextLike,
+} from "./stream.js";
 
 const cfg: ModelConfig = {
   name: "test-model",
@@ -20,13 +24,18 @@ const fakeStore = (current: ModelConfig | null) => ({
   getCurrent: () => current,
 });
 
-const arrayToTextStream = (chunks: string[]): AsyncIterable<string> => ({
+const arrayToFullStream = (
+  chunks: FullStreamChunk[],
+): AsyncIterable<FullStreamChunk> => ({
   async *[Symbol.asyncIterator]() {
     for (const c of chunks) {
       yield c;
     }
   },
 });
+
+const textChunks = (...texts: string[]): FullStreamChunk[] =>
+  texts.map((t) => ({ type: "text-delta", text: t }));
 
 const collect = async (
   iter: AsyncIterable<AgentStreamEvent>,
@@ -72,7 +81,7 @@ describe("streamAgent", () => {
   it("[B6.3+B6.4] emits start → delta(s) → finish in order with model name + finish metadata", async () => {
     const messages: ChatMessage[] = [{ role: "user", content: "hi" }];
     const fakeStream: StreamTextLike = {
-      textStream: arrayToTextStream(["Hel", "lo"]),
+      fullStream: arrayToFullStream(textChunks("Hel", "lo")),
       finishReason: Promise.resolve("stop"),
       usage: Promise.resolve({ inputTokens: 12, outputTokens: 2 }),
     };
@@ -100,9 +109,9 @@ describe("streamAgent", () => {
 
   // B6.5
   it("[B6.5] keeps emitted partials when streamText throws mid-stream", async () => {
-    const errorStream: AsyncIterable<string> = {
+    const errorStream: AsyncIterable<FullStreamChunk> = {
       async *[Symbol.asyncIterator]() {
-        yield "A";
+        yield { type: "text-delta", text: "A" };
         throw new Error("provider exploded");
       },
     };
@@ -111,13 +120,109 @@ describe("streamAgent", () => {
         store: fakeStore(cfg),
         resolveApiKey: () => "sk-fake",
         resolveLanguageModel: () => fakeModel,
-        streamText: () => ({ textStream: errorStream }),
+        streamText: () => ({ fullStream: errorStream }),
       }),
     );
     expect(events.map((e) => e.type)).toEqual(["start", "delta", "error"]);
     expect((events[2] as { message: string }).message).toMatch(
       /provider exploded/,
     );
+  });
+
+  // B6.8 — fullStream-era: reasoning-start/delta/end bracket the model's thinking,
+  // and the trio is forwarded independently of text deltas (they may interleave).
+  it("[B6.8] forwards reasoning-start/delta/end chunks alongside text deltas, ignoring placeholder chunk types", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "start" },
+        { type: "reasoning-start" },
+        { type: "reasoning-delta", text: "Let me think… " },
+        { type: "reasoning-delta", text: "step by step." },
+        { type: "reasoning-end" },
+        { type: "text-start" },
+        { type: "text-delta", text: "Answer" },
+        { type: "text-end" },
+        { type: "finish-step" },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+      }),
+    );
+    expect(events.map((e) => e.type)).toEqual([
+      "start",
+      "reasoning-start",
+      "reasoning-delta",
+      "reasoning-delta",
+      "reasoning-end",
+      "delta",
+      "finish",
+    ]);
+    expect((events[2] as { text: string }).text).toBe("Let me think… ");
+    expect((events[3] as { text: string }).text).toBe("step by step.");
+    expect((events[5] as { text: string }).text).toBe("Answer");
+  });
+
+  // B6.9 — fullStream surfaces non-fatal provider errors as `{type:"error"}` chunks
+  // (rather than throwing). They terminate the stream just like a thrown error.
+  it("[B6.9] converts an error chunk from fullStream into a single error event and stops", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "text-delta", text: "Hi" },
+        { type: "error", error: new Error("rate limited") },
+        { type: "text-delta", text: "ignored" },
+      ]),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+      }),
+    );
+    expect(events.map((e) => e.type)).toEqual(["start", "delta", "error"]);
+    expect((events[2] as { message: string }).message).toMatch(/rate limited/);
+  });
+
+  // B6.10 — workaround for vercel/ai#12054: the SDK eventProcessor enqueues
+  // string-typed `error` chunks (e.g. "reasoning part 0 not found") AFTER the
+  // offending reasoning chunk has already been forwarded. We must NOT propagate
+  // those validation errors as fatal — the rest of the turn (text + finish)
+  // is still healthy. Real provider errors (Error objects) keep terminating.
+  it("[B6.10] silently recovers from SDK consistency-check error chunks and keeps streaming", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "reasoning-delta", text: "stray thought" },
+        { type: "error", error: "reasoning part 0 not found" },
+        { type: "text-delta", text: "actual answer" },
+        { type: "error", error: "text part 7 not found" },
+        { type: "text-delta", text: " continues" },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+      }),
+    );
+    expect(events.map((e) => e.type)).toEqual([
+      "start",
+      "reasoning-delta",
+      "delta",
+      "delta",
+      "finish",
+    ]);
+    expect((events[2] as { text: string }).text).toBe("actual answer");
+    expect((events[3] as { text: string }).text).toBe(" continues");
   });
 
   // B6.6
@@ -143,12 +248,12 @@ describe("streamAgent", () => {
     const ac = new AbortController();
     let abortReceived = false;
 
-    const slowStream: AsyncIterable<string> = {
+    const slowStream: AsyncIterable<FullStreamChunk> = {
       async *[Symbol.asyncIterator]() {
-        yield "first";
+        yield { type: "text-delta", text: "first" };
         ac.abort();
         await Promise.resolve();
-        yield "second";
+        yield { type: "text-delta", text: "second" };
       },
     };
 
@@ -156,7 +261,7 @@ describe("streamAgent", () => {
       args.abortSignal?.addEventListener("abort", () => {
         abortReceived = true;
       });
-      return { textStream: slowStream } as StreamTextLike;
+      return { fullStream: slowStream } as StreamTextLike;
     };
 
     const events = await collect(

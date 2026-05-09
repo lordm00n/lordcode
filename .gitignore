@@ -42,3 +42,5 @@ coverage/
 # Runtime
 *.pid
 *.pid.lock
+
+.devtool/features

@@ -9,11 +9,27 @@ import { resolveApiKey as defaultResolveApiKey } from "./apiKey.js";
 import { resolveLanguageModel as defaultResolveLanguageModel } from "./provider.js";
 
 /**
+ * One frame of `result.fullStream` that this generator can interpret.
+ *
+ * The full chunk universe is much larger (text-start, text-end, tool-*, source,
+ * file, start, start-step, finish-step, finish, abort, raw, …); we keep the
+ * shape loose so the test fakes don't have to model fields we don't read.
+ */
+export interface FullStreamChunk {
+  /** Discriminator — see https://ai-sdk.dev/docs/ai-sdk-core/generating-text#fullstream-property */
+  type: string;
+  /** Present on `text-delta` and `reasoning-delta`. */
+  text?: string;
+  /** Present on `error` chunks (fullStream surfaces non-fatal errors as data). */
+  error?: unknown;
+}
+
+/**
  * Anything `streamText` is allowed to return that this generator cares about.
  * Keeps the unit tests unburdened by the full Vercel AI SDK surface.
  */
 export interface StreamTextLike {
-  textStream: AsyncIterable<string>;
+  fullStream: AsyncIterable<FullStreamChunk>;
   finishReason?: Promise<string | undefined> | string | undefined;
   usage?:
     | Promise<{ inputTokens?: number; outputTokens?: number } | undefined>
@@ -95,10 +111,49 @@ export async function* streamAgent(
   yield { type: "start", model: cfg.name };
 
   try {
-    for await (const chunk of result.textStream) {
+    for await (const chunk of result.fullStream) {
       if (ctx.signal?.aborted) return;
-      if (chunk.length === 0) continue;
-      yield { type: "delta", text: chunk };
+      switch (chunk.type) {
+        case "text-delta": {
+          const text = chunk.text ?? "";
+          if (text.length === 0) break;
+          yield { type: "delta", text };
+          break;
+        }
+        case "reasoning-start": {
+          yield { type: "reasoning-start" };
+          break;
+        }
+        case "reasoning-delta": {
+          const text = chunk.text ?? "";
+          if (text.length === 0) break;
+          yield { type: "reasoning-delta", text };
+          break;
+        }
+        case "reasoning-end": {
+          yield { type: "reasoning-end" };
+          break;
+        }
+        case "error": {
+          // `fullStream` surfaces non-fatal provider errors as data instead of throwing.
+          // The SDK's event-recorder also enqueues string-typed `error` chunks for
+          // its own consistency checks (e.g. reasoning-delta arriving without a
+          // preceding reasoning-start — vercel/ai#12054, PR #13110). Those checks
+          // run *after* the offending chunk has already been forwarded to us
+          // (stream-text.ts forwards at line 870 before validating), so the
+          // payload is already in our hands; if we propagate the error we'd kill
+          // an otherwise-healthy turn. Treat them as warnings and continue.
+          if (isRecoverableSdkError(chunk.error)) break; // HACK: This is a workaround for a bug in the SDK.
+          yield { type: "error", message: errorMessage(chunk.error) };
+          return;
+        }
+        default:
+          // Placeholder: text-start/text-end, tool-input-*, tool-call,
+          // tool-result, tool-error, source, file, start, start-step,
+          // finish-step, finish, abort, raw — intentionally ignored until
+          // later iterations add support.
+          break;
+      }
     }
   } catch (err) {
     if (ctx.signal?.aborted) return;
@@ -135,6 +190,26 @@ function missingApiKeyMessage(cfg: ModelConfig): string {
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * Recognise SDK-internal consistency-check errors that arrive on `fullStream`
+ * but don't actually correspond to a failed turn. These come through with a
+ * plain `string` payload (real provider/network errors are Error/object).
+ *
+ * Currently covers the "reasoning part X not found" / "text part X not found"
+ * family from `stream-text.ts` (vercel/ai#12054 + PR #13110, unmerged). Drop
+ * this once the upstream fix lands and we bump `ai`.
+ */
+const RECOVERABLE_SDK_ERROR_RE = /^(reasoning|text) part .+ not found$/;
+function isRecoverableSdkError(err: unknown): boolean {
+  const msg =
+    typeof err === "string"
+      ? err
+      : err instanceof Error
+        ? err.message
+        : null;
+  return msg != null && RECOVERABLE_SDK_ERROR_RE.test(msg);
 }
 
 async function maybeAwait<T>(v: Promise<T> | T | undefined): Promise<T | undefined> {

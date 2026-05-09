@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import type { ChatMessage, ModelsListResponse } from "@lordcode/shared";
 import type { ApiClient } from "../api/client.js";
 import { parseCommand } from "../lib/commands.js";
@@ -16,7 +16,39 @@ interface SystemEntry {
   content: string;
 }
 
-type Entry = ({ kind: "msg" } & ChatMessage) | SystemEntry;
+interface MessageEntry extends ChatMessage {
+  kind: "msg";
+  /**
+   * Total wall-clock time the model spent in reasoning blocks during this turn.
+   * Only set on assistant entries that had at least one reasoning chunk; absent
+   * for plain text-only turns.
+   */
+  reasoningDurationMs?: number;
+}
+
+type Entry = MessageEntry | SystemEntry;
+
+interface StreamingState {
+  text: string;
+  reasoning: string;
+  /**
+   * `Date.now()` when the current (in-flight) reasoning block started, or null
+   * when no reasoning is currently in progress.
+   */
+  reasoningStartedAt: number | null;
+  /**
+   * Accumulated wall-clock duration of reasoning blocks that have already
+   * ended this turn. Null until we've observed at least one reasoning block.
+   */
+  reasoningDurationMs: number | null;
+}
+
+/**
+ * Once the in-progress reasoning would render taller than this many wrapped
+ * terminal rows, collapse it to a single "Thinking..." line so it stops
+ * dominating the viewport while the model keeps thinking.
+ */
+const REASONING_COLLAPSE_LINES = 8;
 
 export function App({ api, baseUrl, onExit }: AppProps) {
   const ink = useApp();
@@ -24,7 +56,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   const [input, setInput] = useState("");
   const [models, setModels] = useState<ModelsListResponse | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [streaming, setStreaming] = useState<{ text: string } | null>(null);
+  const [streaming, setStreaming] = useState<StreamingState | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -45,9 +77,21 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     [],
   );
 
-  const pushMessage = useCallback((msg: ChatMessage) => {
-    setEntries((prev) => [...prev, { kind: "msg", ...msg }]);
-  }, []);
+  const pushMessage = useCallback(
+    (msg: ChatMessage, opts?: { reasoningDurationMs?: number }) => {
+      setEntries((prev) => [
+        ...prev,
+        {
+          kind: "msg",
+          ...msg,
+          ...(opts?.reasoningDurationMs != null
+            ? { reasoningDurationMs: opts.reasoningDurationMs }
+            : {}),
+        },
+      ]);
+    },
+    [],
+  );
 
   const handleModels = useCallback(async () => {
     try {
@@ -82,30 +126,85 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     async (text: string) => {
       const userMsg: ChatMessage = { role: "user", content: text };
       const baseEntries: Entry[] = [...entries, { kind: "msg", ...userMsg }];
+      // Strip UI-only fields (kind, reasoningDurationMs) before sending; the
+      // server contract only carries role + content.
       const messages: ChatMessage[] = baseEntries
-        .filter((e): e is { kind: "msg" } & ChatMessage => e.kind === "msg")
-        .map(({ kind: _kind, ...m }) => m);
+        .filter((e): e is MessageEntry => e.kind === "msg")
+        .map((e) => ({ role: e.role, content: e.content }));
       setEntries(baseEntries);
 
       const stream = api.chat({ messages });
       abortRef.current = stream.abort;
-      setStreaming({ text: "" });
+      setStreaming({
+        text: "",
+        reasoning: "",
+        reasoningStartedAt: null,
+        reasoningDurationMs: null,
+      });
 
       let acc = "";
+      let accReasoning = "";
+      let reasoningStartedAt: number | null = null;
+      let reasoningDurationMs: number | null = null;
       let receivedStart = false;
       let errorMsg: string | null = null;
+
+      // Closes any in-flight reasoning block, folding its elapsed time into the
+      // running total. Safe to call multiple times — a no-op if reasoning isn't
+      // currently in progress.
+      const closeReasoning = () => {
+        if (reasoningStartedAt == null) return;
+        const elapsed = Date.now() - reasoningStartedAt;
+        reasoningDurationMs = (reasoningDurationMs ?? 0) + elapsed;
+        reasoningStartedAt = null;
+      };
+
+      const snapshot = (): StreamingState => ({
+        text: acc,
+        reasoning: accReasoning,
+        reasoningStartedAt,
+        reasoningDurationMs,
+      });
 
       try {
         for await (const ev of stream.events) {
           if (ev.type === "start") {
             receivedStart = true;
-            setStreaming({ text: "" });
+            acc = "";
+            accReasoning = "";
+            reasoningStartedAt = null;
+            reasoningDurationMs = null;
+            setStreaming(snapshot());
           } else if (ev.type === "delta") {
             acc += ev.text;
-            setStreaming({ text: acc });
+            setStreaming(snapshot());
+          } else if (ev.type === "reasoning-start") {
+            // If a previous block somehow didn't get its end event, fold its
+            // time in before opening a new one so durations stay additive.
+            closeReasoning();
+            reasoningStartedAt = Date.now();
+            setStreaming(snapshot());
+          } else if (ev.type === "reasoning-delta") {
+            accReasoning += ev.text;
+            // Tolerate providers that emit reasoning content without a wrapping
+            // start event: lazily start the timer on first delta.
+            if (
+              reasoningStartedAt == null &&
+              reasoningDurationMs == null
+            ) {
+              reasoningStartedAt = Date.now();
+            }
+            setStreaming(snapshot());
+          } else if (ev.type === "reasoning-end") {
+            closeReasoning();
+            setStreaming(snapshot());
           } else if (ev.type === "finish") {
+            closeReasoning();
             const suffix = ev.aborted ? "\n[interrupted]" : "";
-            pushMessage({ role: "assistant", content: acc + suffix });
+            pushMessage(
+              { role: "assistant", content: acc + suffix },
+              reasoningDurationMs != null ? { reasoningDurationMs } : undefined,
+            );
             setStreaming(null);
             return;
           } else if (ev.type === "error") {
@@ -119,9 +218,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         abortRef.current = null;
       }
 
+      closeReasoning();
+      const reasoningOpts =
+        reasoningDurationMs != null ? { reasoningDurationMs } : undefined;
+
       if (errorMsg != null) {
         if (acc.length > 0) {
-          pushMessage({ role: "assistant", content: `${acc}\n[interrupted]` });
+          pushMessage(
+            { role: "assistant", content: `${acc}\n[interrupted]` },
+            reasoningOpts,
+          );
         }
         pushSystem("error", errorMsg);
         setStreaming(null);
@@ -129,7 +235,10 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       }
 
       if (acc.length > 0) {
-        pushMessage({ role: "assistant", content: `${acc}\n[interrupted]` });
+        pushMessage(
+          { role: "assistant", content: `${acc}\n[interrupted]` },
+          reasoningOpts,
+        );
       } else if (!receivedStart) {
         pushSystem("error", "stream ended without any output");
       }
@@ -226,11 +335,22 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           entries.map((e, i) => <EntryView key={i} entry={e} />)
         )}
         {streaming != null ? (
-          <Box>
-            <Text color="yellow">ai </Text>
-            <Text> · </Text>
-            <Text>{streaming.text}</Text>
-            <Text color="gray">▌</Text>
+          <Box flexDirection="column">
+            {streaming.reasoningStartedAt != null ||
+            streaming.reasoningDurationMs != null ||
+            streaming.reasoning.length > 0 ? (
+              <ThinkingPanel
+                reasoning={streaming.reasoning}
+                startedAt={streaming.reasoningStartedAt}
+                durationMs={streaming.reasoningDurationMs}
+              />
+            ) : null}
+            <Box>
+              <Text color="yellow">ai </Text>
+              <Text> · </Text>
+              <Text>{streaming.text}</Text>
+              <Text color="gray">▌</Text>
+            </Box>
           </Box>
         ) : null}
       </Box>
@@ -257,15 +377,101 @@ function EntryView({ entry }: { entry: Entry }) {
       </Box>
     );
   }
+  const reasoningSummary =
+    entry.role === "assistant" && entry.reasoningDurationMs != null
+      ? `Thought for ${formatThinkingDuration(entry.reasoningDurationMs)}`
+      : null;
   return (
-    <Box>
-      <Text color={entry.role === "user" ? "green" : "yellow"}>
-        {entry.role === "user" ? "you" : "ai "}
-      </Text>
-      <Text> · </Text>
-      <Text>{entry.content}</Text>
+    <Box flexDirection="column">
+      {reasoningSummary != null ? (
+        <Text color="gray" italic>
+          {reasoningSummary}
+        </Text>
+      ) : null}
+      <Box>
+        <Text color={entry.role === "user" ? "green" : "yellow"}>
+          {entry.role === "user" ? "you" : "ai "}
+        </Text>
+        <Text> · </Text>
+        <Text>{entry.content}</Text>
+      </Box>
     </Box>
   );
+}
+
+function ThinkingPanel({
+  reasoning,
+  startedAt,
+  durationMs,
+}: {
+  reasoning: string;
+  startedAt: number | null;
+  durationMs: number | null;
+}) {
+  const { stdout } = useStdout();
+  const cols = stdout?.columns ?? 80;
+  // The reasoning body is rendered with a 2-col left indent; subtract that
+  // (and a small safety margin) when estimating wrapped row count.
+  const usable = Math.max(20, cols - 4);
+  const lines = countWrappedLines(reasoning, usable);
+
+  // A reasoning block is "done" when no block is currently in flight AND we
+  // already have a non-zero accumulated duration to display.
+  const isDone = startedAt == null && durationMs != null;
+  const label = isDone
+    ? `Thought for ${formatThinkingDuration(durationMs)}`
+    : "Thinking...";
+
+  // While the model is actively thinking, show the streaming reasoning body so
+  // the user can follow along (auto-collapsed if it gets too tall). Once the
+  // reasoning block has ended, hide the body and keep just the summary line —
+  // the user no longer needs the running narration.
+  const showBody = !isDone && lines > 0 && lines <= REASONING_COLLAPSE_LINES;
+
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      <Text color="gray" italic>
+        {label}
+      </Text>
+      {showBody ? (
+        <Box paddingLeft={2}>
+          <Text color="gray">{reasoning}</Text>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+/**
+ * Approximate visible row count for a string rendered into a fixed-width column.
+ * Empty source lines still occupy one row; non-empty lines are divided by `width`
+ * and rounded up. Good enough to drive a "collapse when tall" heuristic.
+ */
+function countWrappedLines(text: string, width: number): number {
+  if (text.length === 0) return 0;
+  const w = Math.max(1, width);
+  return text.split("\n").reduce((sum, line) => {
+    if (line.length === 0) return sum + 1;
+    return sum + Math.ceil(line.length / w);
+  }, 0);
+}
+
+/**
+ * Render a wall-clock duration as a compact human-readable string suitable for
+ * "Thinking..." / "Thought for X" labels.
+ *
+ * - sub-second → "<1s" (round-tripping to "0s" feels wrong for a thought that
+ *   actually happened)
+ * - under a minute → integer seconds
+ * - a minute or more → "Nm" or "Nm Ks"
+ */
+function formatThinkingDuration(ms: number): string {
+  if (ms < 1000) return "<1s";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
 function formatModelsList(m: ModelsListResponse): string {
