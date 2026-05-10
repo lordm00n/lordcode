@@ -4,6 +4,7 @@ import type { ChatMessage, ModelsListResponse } from "@lordcode/shared";
 import type { ApiClient } from "../api/client.js";
 import { parseCommand } from "../lib/commands.js";
 import { useLogger } from "../lib/logger-context.js";
+import { Input } from "./input/Input.js";
 
 interface AppProps {
   api: ApiClient;
@@ -392,13 +393,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         ) : null}
       </Box>
 
-      <Box>
-        <Text color={streaming != null ? "gray" : "magenta"}>
-          {streaming != null ? "…" : "›"}{" "}
-        </Text>
-        <Text>{input}</Text>
-        {streaming == null ? <Text color="gray">█</Text> : null}
-      </Box>
+      <Input value={input} isStreaming={streaming != null} />
     </Box>
   );
 }
