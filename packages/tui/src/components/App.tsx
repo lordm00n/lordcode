@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useInput, useStdout } from "ink";
+import { Box, Text, useApp, useInput, useStdout, usePaste } from "ink";
 import type { ChatMessage, ModelsListResponse } from "@lordcode/shared";
 import type { ApiClient } from "../api/client.js";
 import { parseCommand } from "../lib/commands.js";
+import { tryParsePastedImage } from "../lib/clipboard-image.js";
+import type { PastedImage } from "../lib/clipboard-image.js";
+import {
+  composeContent,
+  consumedImageIds,
+  renderContent,
+} from "../lib/compose-message.js";
 import { useLogger } from "../lib/logger-context.js";
 import { Input } from "./input/Input.js";
 
@@ -141,9 +148,23 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     [api, log, pushSystem],
   );
 
+  // Pasted images stored out-of-band: keeping their base64 in React state would
+  // re-render the whole tree on every keystroke. The input field shows a short
+  // `[image:<mime>#<id>]` placeholder; resolution back to the actual base64
+  // happens at send time via `composeContent(text, pendingImagesRef.current)`.
+  const pendingImagesRef = useRef<Map<string, PastedImage>>(new Map());
+
   const handleSend = useCallback(
     async (text: string) => {
-      const userMsg: ChatMessage = { role: "user", content: text };
+      const pending = pendingImagesRef.current;
+      const usedImageIds = consumedImageIds(text, pending);
+      const content = composeContent(text, pending);
+      // Drop the images we just baked into the outgoing turn so the next send
+      // doesn't re-attach them. Images whose placeholder the user accidentally
+      // deleted before sending stay in the ref — they may re-paste / re-type.
+      for (const id of usedImageIds) pending.delete(id);
+
+      const userMsg: ChatMessage = { role: "user", content };
       const baseEntries: Entry[] = [...entries, { kind: "msg", ...userMsg }];
       // Strip UI-only fields (kind, reasoningDurationMs) before sending; the
       // server contract only carries role + content.
@@ -152,9 +173,17 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         .map((e) => ({ role: e.role, content: e.content }));
       setEntries(baseEntries);
 
+      const imageCount =
+        typeof content === "string"
+          ? 0
+          : content.reduce(
+              (n, p) => (p.type === "image" ? n + 1 : n),
+              0,
+            );
       log.debug("send", {
         messages: messages.length,
         len: text.length,
+        ...(imageCount > 0 ? { images: imageCount } : {}),
       });
 
       const stream = api.chat({ messages });
@@ -281,6 +310,26 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     },
     [api, entries, log, pushMessage, pushSystem],
   );
+
+  usePaste((text) => {
+    void (async () => {
+      const img = await tryParsePastedImage(text, { fallbackToClipboard: true });
+      if (img == null) {
+        setInput((v) => v + text);
+        return;
+      }
+      const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      pendingImagesRef.current.set(id, img);
+      const approxBytes = Math.floor((img.base64.length * 3) / 4);
+      log.debug("pasted image", {
+        id,
+        mime: img.mimeType,
+        source: img.source,
+        bytes: approxBytes,
+      });
+      setInput((v) => v + `[image:${img.mimeType}#${id}]`);
+    })();
+  });
 
   useInput((char, key) => {
     if (key.ctrl && (char === "c" || char === "d")) {
@@ -425,7 +474,7 @@ function EntryView({ entry }: { entry: Entry }) {
           {entry.role === "user" ? "you" : "ai "}
         </Text>
         <Text> · </Text>
-        <Text>{entry.content}</Text>
+        <Text>{renderContent(entry.content)}</Text>
       </Box>
     </Box>
   );

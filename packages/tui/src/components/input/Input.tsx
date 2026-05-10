@@ -20,18 +20,14 @@ export function Input({ value, isStreaming }: InputProps) {
         {isStreaming ? "…" : "›"}{" "}
       </Text>
 
-      {value.length == 0 ? (
-          !isStreaming ? <Text color="gray">█</Text> : null
-        ) : (
-        <Text>
-          {value.split("").map((char, index) => (
-            <Text key={index}>
-              {char}
-              {index === value.length - 1 && !isStreaming ? <Text color="gray">█</Text> : null}
-            </Text>
-          ))}
-        </Text>
-      )}
+      <Text>
+        {value.split("").map((char, index) => (
+          <Text key={index}>
+            {char}
+          </Text>
+        ))}
+        {!isStreaming ? <Text color="gray">█</Text> : null}
+      </Text>
     </Box>
   );
 }

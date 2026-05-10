@@ -11,9 +11,35 @@ export interface HealthResponse {
 
 export type ChatRole = "user" | "assistant" | "system";
 
+export interface TextPart {
+  type: "text";
+  text: string;
+}
+
+/**
+ * Inline image content. `image` is a raw base64 string (no `data:` prefix)
+ * and `mediaType` is the IANA type (e.g. `image/png`). Wire shape mirrors
+ * Vercel AI SDK's `ImagePart` so the server can hand `messages` directly to
+ * `streamText` without translation.
+ */
+export interface ImagePart {
+  type: "image";
+  /** Raw base64-encoded image data, no `data:` prefix. */
+  image: string;
+  /** IANA media type — `image/png`, `image/jpeg`, etc. */
+  mediaType: string;
+}
+
+export type ContentPart = TextPart | ImagePart;
+
 export interface ChatMessage {
   role: ChatRole;
-  content: string;
+  /**
+   * Either a plain string (legacy text-only turns) or an ordered list of
+   * parts for multimodal turns. Single-modality user turns SHOULD remain a
+   * string to keep the wire format compact.
+   */
+  content: string | ContentPart[];
 }
 
 export interface AgentChatRequest {
