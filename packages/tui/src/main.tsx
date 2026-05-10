@@ -13,6 +13,25 @@ import { createApiClient } from "./api/client.js";
 import { App } from "./components/App.js";
 import { LoggerProvider } from "./lib/logger-context.js";
 
+// DECSCUSR (CSI Ps SP q) selects the terminal's cursor shape. We force
+// "steady block" on startup so the hardware cursor visually highlights the
+// character at the insertion point — mimicking the old in-text inverse
+// block — regardless of the user's terminal default (which may be `bar` or
+// `underline`). Restored to the terminal default on exit so we don't leak
+// state back to the host shell.
+const CURSOR_STYLE_BLOCK_STEADY = "\x1b[2 q";
+const CURSOR_STYLE_RESET = "\x1b[0 q";
+
+function writeCursorStyle(seq: string) {
+  if (!process.stdout.isTTY) return;
+  try {
+    process.stdout.write(seq);
+  } catch {
+    // stdout may be torn down during shutdown (EPIPE etc.); cursor style is
+    // purely cosmetic, so swallow.
+  }
+}
+
 async function main() {
   // §3 / §11: a single env var (`LORDCODE_DEBUG`) toggles both verbosity and
   // the run-header `mode` tag. There is deliberately no `silent` env path
@@ -72,6 +91,13 @@ async function main() {
 
   const api = createApiClient(handle.baseUrl, tuiLog);
 
+  // Force steady-block cursor BEFORE Ink takes over stdout so the very first
+  // frame already renders with the right shape. Belt-and-suspenders: a
+  // terminal-level 'exit' handler also resets, in case `cleanup` doesn't run
+  // (uncaughtException, hard kill paths Node still services, etc.).
+  writeCursorStyle(CURSOR_STYLE_BLOCK_STEADY);
+  process.on("exit", () => writeCursorStyle(CURSOR_STYLE_RESET));
+
   const ink = render(
     <LoggerProvider logger={tuiLog}>
       <App
@@ -91,6 +117,7 @@ async function main() {
     cleaningUp = true;
     if (signal) bootLog.info("shutting down", { signal });
     ink.unmount();
+    writeCursorStyle(CURSOR_STYLE_RESET);
     try {
       await handle.shutdown();
     } catch (err) {

@@ -10,8 +10,22 @@ import {
   consumedImageIds,
   renderContent,
 } from "../lib/compose-message.js";
+import {
+  deleteAt,
+  deleteBefore,
+  insert,
+  moveDown,
+  moveLeft,
+  moveRight,
+  moveUp,
+  moveWordLeft,
+  moveWordRight,
+  type InputState,
+} from "../lib/input-buffer.js";
 import { useLogger } from "../lib/logger-context.js";
 import { Input } from "./input/Input.js";
+
+const EMPTY_INPUT: InputState = { value: "", cursor: 0 };
 
 interface AppProps {
   api: ApiClient;
@@ -67,7 +81,10 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   const log = useMemo(() => baseLog.child("ui"), [baseLog]);
   const cmdLog = useMemo(() => baseLog.child("cmd"), [baseLog]);
   const [entries, setEntries] = useState<Entry[]>([]);
-  const [input, setInput] = useState("");
+  // Single-buffer input state. The cursor tracks character offsets into
+  // `input.value`; all key/paste handlers go through the pure transitions in
+  // `lib/input-buffer.ts` so the rules are testable without Ink in the loop.
+  const [input, setInput] = useState<InputState>(EMPTY_INPUT);
   const [models, setModels] = useState<ModelsListResponse | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
@@ -315,7 +332,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     void (async () => {
       const img = await tryParsePastedImage(text, { fallbackToClipboard: true });
       if (img == null) {
-        setInput((v) => v + text);
+        setInput((prev) => insert(prev, text));
         return;
       }
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -327,7 +344,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         source: img.source,
         bytes: approxBytes,
       });
-      setInput((v) => v + `[image:${img.mimeType}#${id}]`);
+      setInput((prev) => insert(prev, `[image:${img.mimeType}#${id}]`));
     })();
   });
 
@@ -349,10 +366,10 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     }
 
     if (key.return) {
-      const trimmed = input.trim();
+      const trimmed = input.value.trim();
       if (!trimmed) return;
       const cmd = parseCommand(trimmed);
-      setInput("");
+      setInput(EMPTY_INPUT);
       switch (cmd.kind) {
         case "send":
           void handleSend(cmd.text);
@@ -371,13 +388,39 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       return;
     }
 
-    if (key.backspace || key.delete) {
-      setInput((v) => v.slice(0, -1));
+    // Arrow-key navigation. Option/Alt + horizontal jumps a word; on macOS,
+    // terminals report Option as `key.meta`. Vertical arrows always step a
+    // single line — multi-line text only enters the buffer via paste today.
+    if (key.leftArrow) { 
+      // FIXME: 这样子检测整个单词移动是不行的, 后面要修
+      setInput((prev) => (key.meta ? moveWordLeft(prev) : moveLeft(prev)));
+      return;
+    }
+    if (key.rightArrow) { 
+      // FIXME: 这样子检测整个单词移动是不行的, 后面要修
+      setInput((prev) => (key.meta ? moveWordRight(prev) : moveRight(prev)));
+      return;
+    }
+    if (key.upArrow) {
+      setInput((prev) => moveUp(prev));
+      return;
+    }
+    if (key.downArrow) {
+      setInput((prev) => moveDown(prev));
+      return;
+    }
+
+    if (key.backspace) {
+      setInput((prev) => deleteBefore(prev));
+      return;
+    }
+    if (key.delete) {
+      setInput((prev) => deleteAt(prev));
       return;
     }
 
     if (char && !key.ctrl && !key.meta) {
-      setInput((v) => v + char);
+      setInput((prev) => insert(prev, char));
     }
   });
 
@@ -442,7 +485,11 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         ) : null}
       </Box>
 
-      <Input value={input} isStreaming={streaming != null} />
+      <Input
+        value={input.value}
+        cursor={input.cursor}
+        isStreaming={streaming != null}
+      />
     </Box>
   );
 }
