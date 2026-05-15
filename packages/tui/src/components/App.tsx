@@ -11,6 +11,11 @@ import {
   renderContent,
 } from "../lib/compose-message.js";
 import {
+  formatToolCall,
+  formatToolError,
+  formatToolResult,
+} from "../lib/format-tool-call.js";
+import {
   deleteAt,
   deleteBefore,
   insert,
@@ -49,7 +54,27 @@ interface MessageEntry extends ChatMessage {
   reasoningDurationMs?: number;
 }
 
-type Entry = MessageEntry | SystemEntry;
+/**
+ * One tool invocation in the conversation. Mounted as `phase: "call"` when the
+ * `tool-call` chunk arrives, then upgraded in-place to `"result"` or `"error"`
+ * when the matching `tool-result` / `tool-error` arrives (matched by
+ * `toolCallId`). Server contract guarantees the matching chunk shows up in the
+ * same turn, so leaving it stuck on "call" would only happen on a transport
+ * failure — same blast radius as a half-streamed assistant message.
+ */
+interface ToolEntry {
+  kind: "tool";
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  phase: "call" | "result" | "error";
+  /** Populated when phase = "result". */
+  output?: unknown;
+  /** Populated when phase = "error". */
+  errorMessage?: string;
+}
+
+type Entry = MessageEntry | SystemEntry | ToolEntry;
 
 interface StreamingState {
   text: string;
@@ -183,8 +208,10 @@ export function App({ api, baseUrl, onExit }: AppProps) {
 
       const userMsg: ChatMessage = { role: "user", content };
       const baseEntries: Entry[] = [...entries, { kind: "msg", ...userMsg }];
-      // Strip UI-only fields (kind, reasoningDurationMs) before sending; the
-      // server contract only carries role + content.
+      // Strip UI-only fields (kind, reasoningDurationMs, tool entries) before
+      // sending; the server contract only carries role + content. Tool calls
+      // are NOT replayed across turns — the SDK handles per-turn agent loops
+      // internally and our wire format doesn't have a `tool` role yet.
       const messages: ChatMessage[] = baseEntries
         .filter((e): e is MessageEntry => e.kind === "msg")
         .map((e) => ({ role: e.role, content: e.content }));
@@ -285,6 +312,61 @@ export function App({ api, baseUrl, onExit }: AppProps) {
             );
             setStreaming(null);
             return;
+          } else if (ev.type === "tool-call") {
+            log.debug("stream: tool-call", {
+              toolCallId: ev.toolCallId,
+              toolName: ev.toolName,
+            });
+            // Append a fresh ToolEntry. Note: this happens BETWEEN streaming
+            // updates, so we don't disturb the in-progress assistant text — it
+            // stays in the `streaming` state until `finish`.
+            setEntries((prev) => [
+              ...prev,
+              {
+                kind: "tool",
+                toolCallId: ev.toolCallId,
+                toolName: ev.toolName,
+                input: ev.input,
+                phase: "call",
+              },
+            ]);
+          } else if (ev.type === "tool-result") {
+            log.debug("stream: tool-result", {
+              toolCallId: ev.toolCallId,
+              toolName: ev.toolName,
+            });
+            // Upgrade the matching ToolEntry in-place. We rewrite by
+            // toolCallId; if no match (e.g. dropped tool-call), append.
+            setEntries((prev) => upgradeToolEntry(prev, ev.toolCallId, (e) => ({
+              ...e,
+              phase: "result",
+              output: ev.output,
+            }), {
+              kind: "tool",
+              toolCallId: ev.toolCallId,
+              toolName: ev.toolName,
+              input: undefined,
+              phase: "result",
+              output: ev.output,
+            }));
+          } else if (ev.type === "tool-error") {
+            log.warn("stream: tool-error", {
+              toolCallId: ev.toolCallId,
+              toolName: ev.toolName,
+              message: ev.message,
+            });
+            setEntries((prev) => upgradeToolEntry(prev, ev.toolCallId, (e) => ({
+              ...e,
+              phase: "error",
+              errorMessage: ev.message,
+            }), {
+              kind: "tool",
+              toolCallId: ev.toolCallId,
+              toolName: ev.toolName,
+              input: undefined,
+              phase: "error",
+              errorMessage: ev.message,
+            }));
           } else if (ev.type === "error") {
             errorMsg = ev.message;
             log.warn("stream: error frame", { message: ev.message });
@@ -505,6 +587,9 @@ function EntryView({ entry }: { entry: Entry }) {
       </Box>
     );
   }
+  if (entry.kind === "tool") {
+    return <ToolEntryView entry={entry} />;
+  }
   const reasoningSummary =
     entry.role === "assistant" && entry.reasoningDurationMs != null
       ? `Thought for ${formatThinkingDuration(entry.reasoningDurationMs)}`
@@ -525,6 +610,67 @@ function EntryView({ entry }: { entry: Entry }) {
       </Box>
     </Box>
   );
+}
+
+function ToolEntryView({ entry }: { entry: ToolEntry }) {
+  // Color and prefix encode the lifecycle phase at a glance:
+  //   →  cyan/dim  : invoked, awaiting result
+  //   ←  cyan      : completed successfully
+  //   ×  red       : tool errored (model can recover; this is not a turn-ending error)
+  if (entry.phase === "call") {
+    return (
+      <Box>
+        <Text color="cyan" dimColor>
+          → {formatToolCall(entry.toolName, entry.input)}
+        </Text>
+      </Box>
+    );
+  }
+  if (entry.phase === "result") {
+    return (
+      <Box flexDirection="column">
+        <Text color="cyan" dimColor>
+          → {formatToolCall(entry.toolName, entry.input)}
+        </Text>
+        <Text color="cyan">
+          ← {formatToolResult(entry.toolName, entry.output)}
+        </Text>
+      </Box>
+    );
+  }
+  return (
+    <Box flexDirection="column">
+      <Text color="cyan" dimColor>
+        → {formatToolCall(entry.toolName, entry.input)}
+      </Text>
+      <Text color="red">
+        × {formatToolError(entry.toolName, entry.errorMessage ?? "")}
+      </Text>
+    </Box>
+  );
+}
+
+/**
+ * Locate a {@link ToolEntry} by `toolCallId` and return a new entries array
+ * with that entry transformed by `update`. If no entry matches, append
+ * `fallback` instead — defensive against transport drops where a `tool-result`
+ * arrives without its preceding `tool-call`.
+ */
+function upgradeToolEntry(
+  prev: Entry[],
+  toolCallId: string,
+  update: (entry: ToolEntry) => ToolEntry,
+  fallback: ToolEntry,
+): Entry[] {
+  let found = false;
+  const next = prev.map((e) => {
+    if (e.kind === "tool" && e.toolCallId === toolCallId) {
+      found = true;
+      return update(e);
+    }
+    return e;
+  });
+  return found ? next : [...next, fallback];
 }
 
 function ThinkingPanel({

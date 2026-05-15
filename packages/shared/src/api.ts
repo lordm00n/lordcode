@@ -59,6 +59,15 @@ export interface AgentChatRequest {
  *   between a "Thinking..." indicator and a final "Thought for Xs" summary. Each turn may
  *   contain zero or more reasoning blocks; deltas without a wrapping start/end pair can
  *   still arrive (e.g. older providers) and the UI must tolerate them.
+ *
+ * Tool events (multi-step agent loop):
+ * - `tool-call` precedes its paired `tool-result` / `tool-error` (matched by `toolCallId`).
+ * - A single turn may emit multiple tool calls; they freely interleave with `delta` /
+ *   `reasoning-*` from the same agent loop.
+ * - `input` / `output` are wire-`unknown`: the server emits whatever the tool produced,
+ *   the client decides per-`toolName` how to render. (First wave: `toolName === "ripgrep"`.)
+ * - `tool-error` carries a `message: string` collapsed from the raw provider/tool error;
+ *   the SDK feeds it back to the model so the agent loop can continue.
  */
 export type AgentStreamEvent =
   | { type: "start"; model: string }
@@ -72,7 +81,10 @@ export type AgentStreamEvent =
       usage?: { inputTokens?: number; outputTokens?: number };
       aborted?: boolean;
     }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
+  | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
+  | { type: "tool-error"; toolCallId: string; toolName: string; message: string };
 
 export const API_ROUTES = {
   health: "/health",

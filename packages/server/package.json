@@ -37,6 +37,7 @@
     "@hono/node-server": "^1.13.7",
     "@lordcode/logger": "workspace:*",
     "@lordcode/shared": "workspace:*",
+    "@vscode/ripgrep": "^1.18.0",
     "ai": "^6.0.176",
     "hono": "^4.6.10",
     "jsonc-parser": "^3.3.1",

@@ -243,6 +243,167 @@ describe("streamAgent", () => {
     expect(streamTextSpy).not.toHaveBeenCalled();
   });
 
+  // ── Tool events (B6.11–B6.14) ──────────────────────────────────────────
+
+  // B6.11 — happy path: tool-call → tool-result chunks translate verbatim,
+  // and may interleave with text-delta from the agent loop.
+  it("[B6.11] forwards tool-call and tool-result chunks (interleaved with text)", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "text-delta", text: "let me search" },
+        {
+          type: "tool-call",
+          toolCallId: "call_1",
+          toolName: "ripgrep",
+          input: { pattern: "useState", outputMode: "content", headLimit: 100 },
+        },
+        {
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "ripgrep",
+          output: { mode: "content", matches: [], truncated: false },
+        },
+        { type: "text-delta", text: "no matches" },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    expect(events.map((e) => e.type)).toEqual([
+      "start",
+      "delta",
+      "tool-call",
+      "tool-result",
+      "delta",
+      "finish",
+    ]);
+    const toolCall = events[2] as Extract<AgentStreamEvent, { type: "tool-call" }>;
+    expect(toolCall.toolCallId).toBe("call_1");
+    expect(toolCall.toolName).toBe("ripgrep");
+    expect(toolCall.input).toEqual({
+      pattern: "useState",
+      outputMode: "content",
+      headLimit: 100,
+    });
+    const toolResult = events[3] as Extract<AgentStreamEvent, { type: "tool-result" }>;
+    expect(toolResult.toolCallId).toBe("call_1");
+    expect(toolResult.output).toEqual({
+      mode: "content",
+      matches: [],
+      truncated: false,
+    });
+  });
+
+  // B6.12 — tool-error from the SDK translates to AgentStreamEvent.tool-error
+  // with `message` collapsed from the unknown `error` payload. The stream
+  // does NOT terminate — the model can still continue (agent loop recovery).
+  it("[B6.12] forwards tool-error and keeps streaming subsequent chunks", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        {
+          type: "tool-call",
+          toolCallId: "call_2",
+          toolName: "ripgrep",
+          input: { pattern: "[bad" },
+        },
+        {
+          type: "tool-error",
+          toolCallId: "call_2",
+          toolName: "ripgrep",
+          error: new Error("rg failed (exit 2): regex parse error"),
+        },
+        { type: "text-delta", text: "let me try a different approach" },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    expect(events.map((e) => e.type)).toEqual([
+      "start",
+      "tool-call",
+      "tool-error",
+      "delta",
+      "finish",
+    ]);
+    const toolError = events[2] as Extract<AgentStreamEvent, { type: "tool-error" }>;
+    expect(toolError.toolCallId).toBe("call_2");
+    expect(toolError.toolName).toBe("ripgrep");
+    expect(toolError.message).toMatch(/regex parse error/);
+  });
+
+  // B6.13 — toolCallId pairs across multiple agent loop iterations: the
+  // call/result IDs are surfaced unchanged so the TUI can group them.
+  it("[B6.13] preserves distinct toolCallIds across multiple tool invocations", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "tool-call", toolCallId: "a", toolName: "ripgrep", input: { pattern: "p1" } },
+        { type: "tool-result", toolCallId: "a", toolName: "ripgrep", output: { mode: "content", matches: [], truncated: false } },
+        { type: "tool-call", toolCallId: "b", toolName: "ripgrep", input: { pattern: "p2" } },
+        { type: "tool-result", toolCallId: "b", toolName: "ripgrep", output: { mode: "content", matches: [], truncated: false } },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    const ids = events
+      .filter(
+        (e): e is Extract<AgentStreamEvent, { type: "tool-call" | "tool-result" }> =>
+          e.type === "tool-call" || e.type === "tool-result",
+      )
+      .map((e) => e.toolCallId);
+    expect(ids).toEqual(["a", "a", "b", "b"]);
+  });
+
+  // B6.14 — streamText is invoked with a `tools` set and a `stopWhen` cap.
+  // Defending against regression: it would be easy to forget either when
+  // refactoring stream.ts.
+  it("[B6.14] passes tools and stopWhen into streamText", async () => {
+    let capturedArgs: Parameters<StreamTextFn>[0] | null = null;
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([{ type: "text-delta", text: "ok" }]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const fakeTools = { sentinel: { description: "", inputSchema: {} } } as unknown as NonNullable<
+      Parameters<StreamTextFn>[0]["tools"]
+    >;
+    await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        tools: fakeTools,
+        streamText: (args) => {
+          capturedArgs = args;
+          return fakeStream;
+        },
+      }),
+    );
+    expect(capturedArgs).not.toBeNull();
+    expect(capturedArgs!.tools).toBe(fakeTools);
+    expect(capturedArgs!.stopWhen).toBeDefined();
+  });
+
   // B6.7
   it("[B6.7] aborting mid-stream stops emission but keeps frames already produced", async () => {
     const ac = new AbortController();

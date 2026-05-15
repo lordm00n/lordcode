@@ -1,4 +1,10 @@
-import { streamText as defaultStreamText, type LanguageModel } from "ai";
+import {
+  stepCountIs,
+  streamText as defaultStreamText,
+  type LanguageModel,
+  type StopCondition,
+  type ToolSet,
+} from "ai";
 import type { Logger } from "@lordcode/logger";
 import type {
   AgentStreamEvent,
@@ -6,15 +12,27 @@ import type {
   ModelConfig,
 } from "@lordcode/shared";
 import type { ConfigStore } from "../config/store.js";
+import { buildTools } from "../tools/registry.js";
 import { resolveApiKey as defaultResolveApiKey } from "./apiKey.js";
 import { resolveLanguageModel as defaultResolveLanguageModel } from "./provider.js";
 
 /**
+ * Hard cap on agent loop steps per turn. Prevents the model from looping
+ * forever on tool calls. Spec §3 decision #12.
+ */
+const AGENT_LOOP_MAX_STEPS = 10;
+
+/**
  * One frame of `result.fullStream` that this generator can interpret.
  *
- * The full chunk universe is much larger (text-start, text-end, tool-*, source,
- * file, start, start-step, finish-step, finish, abort, raw, …); we keep the
- * shape loose so the test fakes don't have to model fields we don't read.
+ * The full chunk universe is much larger (text-start, text-end, tool-input-*,
+ * source, file, start, start-step, finish-step, finish, abort, raw, …); we
+ * keep the shape loose so the test fakes don't have to model fields we don't
+ * read.
+ *
+ * Tool-related fields (`toolCallId`, `toolName`, `input`, `output`) are only
+ * populated on the `tool-call` / `tool-result` / `tool-error` chunks — the
+ * other variants leave them undefined.
  */
 export interface FullStreamChunk {
   /** Discriminator — see https://ai-sdk.dev/docs/ai-sdk-core/generating-text#fullstream-property */
@@ -23,6 +41,11 @@ export interface FullStreamChunk {
   text?: string;
   /** Present on `error` chunks (fullStream surfaces non-fatal provider errors as data). */
   error?: unknown;
+  /** Present on tool-call / tool-result / tool-error. */
+  toolCallId?: string;
+  toolName?: string;
+  input?: unknown;
+  output?: unknown;
 }
 
 /**
@@ -42,6 +65,8 @@ export type StreamTextFn = (args: {
   model: LanguageModel;
   messages: ChatMessage[];
   abortSignal?: AbortSignal;
+  tools?: ToolSet;
+  stopWhen?: StopCondition<ToolSet> | StopCondition<ToolSet>[];
 }) => StreamTextLike;
 
 export interface StreamAgentContext {
@@ -53,6 +78,18 @@ export interface StreamAgentContext {
    * so per-frame debug lines surface as `server:agent:stream`.
    */
   logger?: Logger;
+  /**
+   * Working directory for any tool execution this turn. Defaults to the
+   * server's `process.cwd()`. Tests inject a fixture dir to keep filesystem
+   * effects scoped.
+   */
+  cwd?: string;
+  /**
+   * Pre-built tool set for this turn. When omitted, `streamAgent` builds the
+   * default registry (currently `{ ripgrep }`). Tests pass `{}` to opt out
+   * entirely or a fake to assert call shapes.
+   */
+  tools?: ToolSet;
   /** test seam: override how the LanguageModel is constructed */
   resolveLanguageModel?: (cfg: ModelConfig, apiKey: string) => LanguageModel;
   /** test seam: override apiKey resolution */
@@ -81,6 +118,7 @@ export async function* streamAgent(
       log.child("apikey")
     : undefined;
   const providerLog = log ? log.child("provider") : undefined;
+  const toolLog = log ? log.child("tool") : undefined;
 
   const cfg = ctx.store.getCurrent();
   if (!cfg) {
@@ -113,12 +151,21 @@ export async function* streamAgent(
   const runStream =
     ctx.streamText ?? (defaultStreamText as unknown as StreamTextFn);
 
+  const tools =
+    ctx.tools ??
+    buildTools({
+      cwd: ctx.cwd ?? process.cwd(),
+      ...(toolLog ? { logger: toolLog } : {}),
+    });
+
   let result: StreamTextLike;
   try {
     const model = resolveModel(cfg, apiKey);
     result = runStream({
       model,
       messages,
+      tools,
+      stopWhen: stepCountIs(AGENT_LOOP_MAX_STEPS),
       ...(ctx.signal ? { abortSignal: ctx.signal } : {}),
     });
   } catch (err) {
@@ -164,6 +211,46 @@ export async function* streamAgent(
           yield { type: "reasoning-end" };
           break;
         }
+        case "tool-call": {
+          // SDK guarantees these fields on `tool-call`; log + forward verbatim.
+          // We propagate `input` as-is (`unknown` on the wire) so the TUI can
+          // render per-`toolName` without a typed-by-name barrier here.
+          const toolCallId = chunk.toolCallId ?? "";
+          const toolName = chunk.toolName ?? "";
+          log?.debug("chunk", { type: "tool-call", toolCallId, toolName });
+          yield {
+            type: "tool-call",
+            toolCallId,
+            toolName,
+            input: chunk.input,
+          };
+          break;
+        }
+        case "tool-result": {
+          const toolCallId = chunk.toolCallId ?? "";
+          const toolName = chunk.toolName ?? "";
+          log?.debug("chunk", { type: "tool-result", toolCallId, toolName });
+          yield {
+            type: "tool-result",
+            toolCallId,
+            toolName,
+            output: chunk.output,
+          };
+          break;
+        }
+        case "tool-error": {
+          const toolCallId = chunk.toolCallId ?? "";
+          const toolName = chunk.toolName ?? "";
+          const message = errorMessage(chunk.error);
+          log?.warn("chunk: tool-error", { toolCallId, toolName, message });
+          yield {
+            type: "tool-error",
+            toolCallId,
+            toolName,
+            message,
+          };
+          break;
+        }
         case "error": {
           // `fullStream` surfaces non-fatal provider errors as data instead of throwing.
           // The SDK's event-recorder also enqueues string-typed `error` chunks for
@@ -186,10 +273,10 @@ export async function* streamAgent(
           return;
         }
         default:
-          // Placeholder: text-start/text-end, tool-input-*, tool-call,
-          // tool-result, tool-error, source, file, start, start-step,
-          // finish-step, finish, abort, raw — intentionally ignored until
-          // later iterations add support.
+          // Placeholder: text-start/text-end, tool-input-* (input streaming —
+          // intentionally not surfaced; we wait for the complete tool-call),
+          // source, file, start, start-step, finish-step, finish, abort, raw
+          // — intentionally ignored until later iterations add support.
           break;
       }
     }

@@ -1,0 +1,115 @@
+/**
+ * Format tool-call / tool-result / tool-error payloads as terse single-line
+ * strings for the TUI message area.
+ *
+ * The format is intentionally minimal (spec §6.3): a richer expandable panel
+ * is left to a future iteration. We render:
+ *   `→ ripgrep(pattern: "useState", type: "ts")`
+ *   `← 12 matches in 7 files`               (or `… (truncated)`)
+ *   `× rg failed: regex parse error`
+ *
+ * Both `input` and `output` arrive on the wire as `unknown` (the server is
+ * tool-agnostic). We sniff per-`toolName` and fall back to a JSON-ish summary
+ * for any unrecognised tool — keeps us forward-compatible with new tools
+ * landing without TUI changes.
+ */
+
+const MAX_INPUT_CHARS = 80;
+
+/** Render the `tool-call` line. */
+export function formatToolCall(toolName: string, input: unknown): string {
+  return `${toolName}(${formatInputArgs(toolName, input)})`;
+}
+
+/** Render the `tool-result` line. */
+export function formatToolResult(toolName: string, output: unknown): string {
+  if (toolName === "ripgrep") return formatRipgrepResult(output);
+  return safePreview(output);
+}
+
+/** Render the `tool-error` line. */
+export function formatToolError(toolName: string, message: string): string {
+  return `${toolName} failed: ${message}`;
+}
+
+// ── ripgrep-specific ────────────────────────────────────────────────────────
+
+function formatRipgrepResult(output: unknown): string {
+  if (!isRecord(output)) return safePreview(output);
+  const mode = output.mode;
+  const truncated = output.truncated === true;
+  const suffix = truncated ? " (truncated)" : "";
+
+  if (mode === "content") {
+    const matches = Array.isArray(output.matches) ? output.matches : [];
+    const fileCount = new Set(
+      matches
+        .map((m) => (isRecord(m) && typeof m.file === "string" ? m.file : null))
+        .filter((f): f is string => f != null),
+    ).size;
+    return `${matches.length} match${matches.length === 1 ? "" : "es"} in ${fileCount} file${fileCount === 1 ? "" : "s"}${suffix}`;
+  }
+
+  if (mode === "files_with_matches") {
+    const files = Array.isArray(output.files) ? output.files : [];
+    return `${files.length} file${files.length === 1 ? "" : "s"}${suffix}`;
+  }
+
+  if (mode === "count") {
+    const counts = Array.isArray(output.counts) ? output.counts : [];
+    const total = counts.reduce((sum, c) => {
+      if (isRecord(c) && typeof c.count === "number") return sum + c.count;
+      return sum;
+    }, 0);
+    return `${total} match${total === 1 ? "" : "es"} across ${counts.length} file${counts.length === 1 ? "" : "s"}${suffix}`;
+  }
+
+  return safePreview(output);
+}
+
+// ── input-arg formatting ────────────────────────────────────────────────────
+
+function formatInputArgs(toolName: string, input: unknown): string {
+  if (!isRecord(input)) return safePreview(input);
+
+  // Per-tool key ordering keeps the most informative args first.
+  const order = toolName === "ripgrep"
+    ? ["pattern", "path", "type", "glob", "outputMode", "headLimit"]
+    : Object.keys(input);
+
+  const parts: string[] = [];
+  for (const key of order) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    if (value == null) continue;
+    // Drop "default-y" values that just clutter the preview.
+    if (key === "outputMode" && value === "content") continue;
+    if (key === "headLimit" && value === 100) continue;
+    parts.push(`${key}: ${formatScalar(value)}`);
+  }
+  return clip(parts.join(", "));
+}
+
+function formatScalar(v: unknown): string {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return safePreview(v);
+}
+
+function safePreview(v: unknown): string {
+  try {
+    const s = JSON.stringify(v);
+    return s == null ? String(v) : clip(s);
+  } catch {
+    return String(v);
+  }
+}
+
+function clip(s: string): string {
+  if (s.length <= MAX_INPUT_CHARS) return s;
+  return `${s.slice(0, MAX_INPUT_CHARS - 1)}…`;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
