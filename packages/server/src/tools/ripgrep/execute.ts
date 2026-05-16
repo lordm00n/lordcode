@@ -1,5 +1,6 @@
-import { spawn as defaultSpawn, type ChildProcess } from "node:child_process";
+import { spawn as defaultSpawn } from "node:child_process";
 import type { Logger } from "@lordcode/logger";
+import { RgProcessError, runRg } from "../process.js";
 import { parseRipgrepJsonLines, type ParseOptions } from "./parse.js";
 import type { RipgrepInput, RipgrepOutput } from "./schema.js";
 
@@ -68,110 +69,27 @@ export async function executeRipgrep(
   deps: RipgrepDeps,
 ): Promise<RipgrepOutput> {
   const log = deps.logger;
-  const spawn = deps.spawn ?? defaultSpawn;
-
-  if (deps.signal?.aborted) {
-    throw makeAbortError("aborted before spawn");
-  }
 
   const args = buildArgs(input);
-  const startedAt = Date.now();
-  log?.debug("rg spawn", { args, cwd: deps.cwd });
-
-  let child: ChildProcess;
+  let result: Awaited<ReturnType<typeof runRg>>;
   try {
-    child = spawn(deps.rgPath, args, {
+    result = await runRg({
+      rgPath: deps.rgPath,
       cwd: deps.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      args,
+      ...(log ? { logger: log } : {}),
+      ...(deps.signal ? { signal: deps.signal } : {}),
+      ...(deps.spawn ? { spawn: deps.spawn } : {}),
     });
   } catch (err) {
-    log?.error("rg spawn failed", err);
+    if (!(err instanceof RgProcessError)) throw err;
     throw new RipgrepError(
-      `failed to spawn ripgrep: ${errorMessage(err)}`,
-      { spawnError: err },
+      `failed to spawn ripgrep: ${errorMessage(err.cause.spawnError ?? err)}`,
+      { spawnError: err.cause.spawnError, stderr: err.cause.stderr },
     );
   }
 
-  // Stream-buffer stdout into JSON Lines; collect stderr verbatim.
-  const stdoutLines: string[] = [];
-  let stdoutResidual = "";
-  child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => {
-    stdoutResidual += chunk;
-    let nl = stdoutResidual.indexOf("\n");
-    while (nl >= 0) {
-      stdoutLines.push(stdoutResidual.slice(0, nl));
-      stdoutResidual = stdoutResidual.slice(nl + 1);
-      nl = stdoutResidual.indexOf("\n");
-    }
-  });
-
-  let stderr = "";
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    stderr += chunk;
-  });
-
-  // Wire abortSignal → SIGTERM. We rely on the standard `close` event below
-  // to translate the resulting non-zero exit into an AbortError.
-  let aborted = false;
-  const onAbort = () => {
-    aborted = true;
-    log?.debug("rg abort: sending SIGTERM");
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      // The process may already be gone; nothing to recover.
-    }
-  };
-  if (deps.signal) {
-    if (deps.signal.aborted) {
-      onAbort();
-    } else {
-      deps.signal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
-
-  // Resolve when the process closes (both stdio streams flushed AND exit
-  // observed). We deliberately use `close`, not `exit`, so any straggler
-  // stdout has been folded into stdoutLines.
-  const { exitCode, signalName, error: spawnRuntimeError } = await new Promise<{
-    exitCode: number | null;
-    signalName: NodeJS.Signals | null;
-    error: Error | null;
-  }>((resolve) => {
-    let settled = false;
-    child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      resolve({ exitCode: null, signalName: null, error: err });
-    });
-    child.on("close", (code, sig) => {
-      if (settled) return;
-      settled = true;
-      resolve({ exitCode: code, signalName: sig, error: null });
-    });
-  });
-
-  if (deps.signal) deps.signal.removeEventListener("abort", onAbort);
-
-  // Flush any final residual stdout that didn't end with \n.
-  if (stdoutResidual.length > 0) stdoutLines.push(stdoutResidual);
-
-  const elapsedMs = Date.now() - startedAt;
-
-  if (aborted) {
-    log?.debug("rg aborted", { elapsedMs });
-    throw makeAbortError("ripgrep aborted by signal");
-  }
-
-  if (spawnRuntimeError != null) {
-    log?.error("rg runtime error", spawnRuntimeError, { elapsedMs });
-    throw new RipgrepError(
-      `ripgrep crashed: ${errorMessage(spawnRuntimeError)}`,
-      { spawnError: spawnRuntimeError, stderr },
-    );
-  }
+  const { stdout, stderr, exitCode, signalName, elapsedMs } = result;
 
   // Non-zero exit codes other than 1 are real errors. SIGTERM-from-us was
   // already handled above; any other signal means the OS killed it.
@@ -191,6 +109,7 @@ export async function executeRipgrep(
     });
   }
 
+  const stdoutLines = stdoutLinesFrom(stdout);
   const parseOpts: ParseOptions = {
     outputMode: input.outputMode,
     headLimit: input.headLimit,
@@ -245,16 +164,9 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
-/**
- * Build a DOMException-style AbortError so callers (the SDK in particular)
- * recognise it and short-circuit the agent loop without surfacing a tool error.
- *
- * We avoid pulling in `node:dom-exception`; constructing an `Error` with
- * `name = "AbortError"` is what `node:fs/promises` and most of the standard
- * library do internally.
- */
-function makeAbortError(reason: string): Error {
-  const err = new Error(reason);
-  err.name = "AbortError";
-  return err;
+function stdoutLinesFrom(stdout: string): string[] {
+  if (stdout.length === 0) return [];
+  const lines = stdout.split(/\r?\n/);
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
 }

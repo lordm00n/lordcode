@@ -24,6 +24,7 @@ export function formatToolCall(toolName: string, input: unknown): string {
 /** Render the `tool-result` line. */
 export function formatToolResult(toolName: string, output: unknown): string {
   if (toolName === "ripgrep") return formatRipgrepResult(output);
+  if (toolName === "glob") return formatGlobResult(output);
   return safePreview(output);
 }
 
@@ -67,15 +68,27 @@ function formatRipgrepResult(output: unknown): string {
   return safePreview(output);
 }
 
+// ── glob-specific ───────────────────────────────────────────────────────────
+
+function formatGlobResult(output: unknown): string {
+  if (!isRecord(output)) return safePreview(output);
+  const files = Array.isArray(output.files) ? output.files : [];
+  const suffix = output.truncated === true ? " (truncated)" : "";
+  return `${files.length} file${files.length === 1 ? "" : "s"}${suffix}`;
+}
+
 // ── input-arg formatting ────────────────────────────────────────────────────
 
 function formatInputArgs(toolName: string, input: unknown): string {
   if (!isRecord(input)) return safePreview(input);
 
   // Per-tool key ordering keeps the most informative args first.
-  const order = toolName === "ripgrep"
-    ? ["pattern", "path", "type", "glob", "outputMode", "headLimit"]
-    : Object.keys(input);
+  const order =
+    toolName === "ripgrep"
+      ? ["pattern", "path", "type", "glob", "outputMode", "headLimit"]
+      : toolName === "glob"
+        ? ["pattern", "path", "exclude", "includeHidden", "headLimit"]
+        : Object.keys(input);
 
   const parts: string[] = [];
   for (const key of order) {
@@ -85,6 +98,8 @@ function formatInputArgs(toolName: string, input: unknown): string {
     // Drop "default-y" values that just clutter the preview.
     if (key === "outputMode" && value === "content") continue;
     if (key === "headLimit" && value === 100) continue;
+    if (key === "includeHidden" && value === false) continue;
+    if (key === "exclude" && Array.isArray(value) && value.length === 0) continue;
     parts.push(`${key}: ${formatScalar(value)}`);
   }
   return clip(parts.join(", "));

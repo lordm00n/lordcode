@@ -43,6 +43,31 @@ describe("formatToolCall", () => {
       /future_tool\(.*\)/,
     );
   });
+
+  it("[F1.5] glob call: pattern first and default values elided", () => {
+    expect(
+      formatToolCall("glob", {
+        pattern: "**/*.ts",
+        includeHidden: false,
+        exclude: [],
+        headLimit: 100,
+      }),
+    ).toBe('glob(pattern: "**/*.ts")');
+  });
+
+  it("[F1.6] glob call: non-default options are included", () => {
+    expect(
+      formatToolCall("glob", {
+        pattern: "*.ts",
+        path: "s",
+        exclude: ["x"],
+        includeHidden: true,
+        headLimit: 25,
+      }),
+    ).toBe(
+      'glob(pattern: "*.ts", path: "s", exclude: ["x"], includeHidden: true, headLimit: 25)',
+    );
+  });
 });
 
 describe("formatToolResult", () => {
@@ -118,6 +143,26 @@ describe("formatToolResult", () => {
         matches: [],
       }),
     ).toBe("0 matches in 0 files");
+  });
+
+  it("[F2.7] glob result: counts files with singular/plural and truncation", () => {
+    expect(
+      formatToolResult("glob", {
+        files: ["a.ts"],
+        truncated: false,
+      }),
+    ).toBe("1 file");
+
+    expect(
+      formatToolResult("glob", {
+        files: ["a.ts", "b.ts"],
+        truncated: true,
+      }),
+    ).toBe("2 files (truncated)");
+  });
+
+  it("[F2.8] glob result: malformed output falls back to preview", () => {
+    expect(formatToolResult("glob", "oops")).toBe('"oops"');
   });
 });
 

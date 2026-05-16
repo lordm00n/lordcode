@@ -1,5 +1,6 @@
 import type { Logger } from "@lordcode/logger";
 import { rgPath } from "@vscode/ripgrep";
+import { createGlobTool } from "./glob/tool.js";
 import { createRipgrepTool } from "./ripgrep/tool.js";
 
 /**
@@ -15,9 +16,8 @@ export interface ToolDeps {
 /**
  * Build the per-turn tool set handed to `streamText`.
  *
- * First wave is just `ripgrep`. Adding a second tool means: (a) implement it
- * under `tools/<name>/`, (b) register it here. Nothing in the agent stream or
- * TUI needs to change for new tools; the wire format is open at `unknown`.
+ * Tools live under `tools/<name>/` and register here. Nothing in the agent
+ * stream needs to change for new tools; the wire format is open at `unknown`.
  */
 export function buildTools(deps: ToolDeps) {
   return {
@@ -25,6 +25,11 @@ export function buildTools(deps: ToolDeps) {
       rgPath,
       cwd: deps.cwd,
       ...(deps.logger ? { logger: deps.logger.child("ripgrep") } : {}),
+    }),
+    glob: createGlobTool({
+      rgPath,
+      cwd: deps.cwd,
+      ...(deps.logger ? { logger: deps.logger.child("glob") } : {}),
     }),
   };
 }
