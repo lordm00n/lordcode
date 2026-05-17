@@ -25,6 +25,7 @@ export function formatToolCall(toolName: string, input: unknown): string {
 export function formatToolResult(toolName: string, output: unknown): string {
   if (toolName === "ripgrep") return formatRipgrepResult(output);
   if (toolName === "glob") return formatGlobResult(output);
+  if (toolName === "read_file") return formatReadFileResult(output);
   return safePreview(output);
 }
 
@@ -77,6 +78,56 @@ function formatGlobResult(output: unknown): string {
   return `${files.length} file${files.length === 1 ? "" : "s"}${suffix}`;
 }
 
+// ── read_file-specific ──────────────────────────────────────────────────────
+
+function formatReadFileResult(output: unknown): string {
+  if (!isRecord(output)) return safePreview(output);
+
+  if (output.kind === "image") {
+    const size =
+      typeof output.byteSize === "number" ? humanBytes(output.byteSize) : "?";
+    const media =
+      typeof output.mediaType === "string" ? output.mediaType : "image";
+    return `image (${size}, ${media})`;
+  }
+
+  if (output.kind === "text") {
+    const start = typeof output.startLine === "number" ? output.startLine : 0;
+    const end = typeof output.endLine === "number" ? output.endLine : 0;
+    const total =
+      typeof output.totalLines === "number" ? output.totalLines : 0;
+    const n = Math.max(0, end - start + 1);
+    const flags: string[] = [];
+    if (output.truncated === true) flags.push("truncated");
+    if (output.lineTruncated === true) flags.push("lines clipped");
+    const flagSuffix =
+      flags.length > 0 ? ` ${flags.map((f) => `(${f})`).join(" ")}` : "";
+    return `${n} line${n === 1 ? "" : "s"} (${start}-${end} of ${total})${flagSuffix}`;
+  }
+
+  return safePreview(output);
+}
+
+/**
+ * Render a byte count in 1024-base units with at most one fractional digit.
+ * Mirrors `du -h` / Finder behaviour closely enough for at-a-glance sizing
+ * in the TUI summary lines.
+ */
+function humanBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return `${n} B`;
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let value = n;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  if (i === 0) return `${value} ${units[0]}`;
+  // 1 decimal place is enough for a single-line preview; trim trailing `.0`.
+  const formatted = value.toFixed(1).replace(/\.0$/, "");
+  return `${formatted} ${units[i]}`;
+}
+
 // ── input-arg formatting ────────────────────────────────────────────────────
 
 function formatInputArgs(toolName: string, input: unknown): string {
@@ -88,7 +139,9 @@ function formatInputArgs(toolName: string, input: unknown): string {
       ? ["pattern", "path", "type", "glob", "outputMode", "headLimit"]
       : toolName === "glob"
         ? ["pattern", "path", "exclude", "includeHidden", "headLimit"]
-        : Object.keys(input);
+        : toolName === "read_file"
+          ? ["path", "offset", "limit"]
+          : Object.keys(input);
 
   const parts: string[] = [];
   for (const key of order) {
@@ -100,6 +153,8 @@ function formatInputArgs(toolName: string, input: unknown): string {
     if (key === "headLimit" && value === 100) continue;
     if (key === "includeHidden" && value === false) continue;
     if (key === "exclude" && Array.isArray(value) && value.length === 0) continue;
+    if (toolName === "read_file" && key === "offset" && value === 1) continue;
+    if (toolName === "read_file" && key === "limit" && value === 2000) continue;
     parts.push(`${key}: ${formatScalar(value)}`);
   }
   return clip(parts.join(", "));

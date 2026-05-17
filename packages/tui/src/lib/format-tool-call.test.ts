@@ -68,6 +68,32 @@ describe("formatToolCall", () => {
       'glob(pattern: "*.ts", path: "s", exclude: ["x"], includeHidden: true, headLimit: 25)',
     );
   });
+
+  it("[F1.7] read_file call: path-only is rendered minimally", () => {
+    expect(formatToolCall("read_file", { path: "a.ts" })).toBe(
+      'read_file(path: "a.ts")',
+    );
+  });
+
+  it("[F1.8] read_file call: default offset=1 / limit=2000 are elided", () => {
+    expect(
+      formatToolCall("read_file", {
+        path: "a.ts",
+        offset: 1,
+        limit: 2000,
+      }),
+    ).toBe('read_file(path: "a.ts")');
+  });
+
+  it("[F1.9] read_file call: non-default offset/limit are kept", () => {
+    expect(
+      formatToolCall("read_file", {
+        path: "a.ts",
+        offset: 100,
+        limit: 50,
+      }),
+    ).toBe('read_file(path: "a.ts", offset: 100, limit: 50)');
+  });
 });
 
 describe("formatToolResult", () => {
@@ -164,6 +190,79 @@ describe("formatToolResult", () => {
   it("[F2.8] glob result: malformed output falls back to preview", () => {
     expect(formatToolResult("glob", "oops")).toBe('"oops"');
   });
+
+  it("[F2.9] read_file text result: line range and totals", () => {
+    expect(
+      formatToolResult("read_file", {
+        kind: "text",
+        path: "/abs/a.ts",
+        content: "",
+        startLine: 1,
+        endLine: 50,
+        totalLines: 200,
+        truncated: true,
+        lineTruncated: false,
+      }),
+    ).toBe("50 lines (1-50 of 200) (truncated)");
+  });
+
+  it("[F2.10] read_file text result: lineTruncated only", () => {
+    expect(
+      formatToolResult("read_file", {
+        kind: "text",
+        path: "/abs/a.ts",
+        content: "",
+        startLine: 1,
+        endLine: 10,
+        totalLines: 10,
+        truncated: false,
+        lineTruncated: true,
+      }),
+    ).toBe("10 lines (1-10 of 10) (lines clipped)");
+  });
+
+  it("[F2.11] read_file text result: empty window when offset > totalLines", () => {
+    expect(
+      formatToolResult("read_file", {
+        kind: "text",
+        path: "/abs/a.ts",
+        content: "",
+        startLine: 100,
+        endLine: 99,
+        totalLines: 3,
+        truncated: false,
+        lineTruncated: false,
+      }),
+    ).toBe("0 lines (100-99 of 3)");
+  });
+
+  it("[F2.12] read_file image result: humanised size + media type", () => {
+    expect(
+      formatToolResult("read_file", {
+        kind: "image",
+        path: "/abs/img.png",
+        mediaType: "image/png",
+        byteSize: 1234,
+        base64: "x",
+      }),
+    ).toBe("image (1.2 KB, image/png)");
+  });
+
+  it("[F2.13] read_file image result: bytes < 1024 stay in B", () => {
+    expect(
+      formatToolResult("read_file", {
+        kind: "image",
+        path: "/abs/img.png",
+        mediaType: "image/png",
+        byteSize: 67,
+        base64: "x",
+      }),
+    ).toBe("image (67 B, image/png)");
+  });
+
+  it("[F2.14] read_file: malformed output falls back to preview", () => {
+    expect(formatToolResult("read_file", "broken")).toBe('"broken"');
+  });
 });
 
 describe("formatToolError", () => {
@@ -171,5 +270,11 @@ describe("formatToolError", () => {
     expect(formatToolError("ripgrep", "rg failed (exit 2): bad regex")).toBe(
       "ripgrep failed: rg failed (exit 2): bad regex",
     );
+  });
+
+  it("[F3.2] read_file error reuses the same shape", () => {
+    expect(
+      formatToolError("read_file", "ENOENT: file not found: /abs/x.ts"),
+    ).toBe("read_file failed: ENOENT: file not found: /abs/x.ts");
   });
 });

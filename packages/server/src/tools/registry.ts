@@ -1,6 +1,7 @@
 import type { Logger } from "@lordcode/logger";
 import { rgPath } from "@vscode/ripgrep";
 import { createGlobTool } from "./glob/tool.js";
+import { createReadFileTool } from "./read-file/tool.js";
 import { createRipgrepTool } from "./ripgrep/tool.js";
 
 /**
@@ -30,6 +31,10 @@ export function buildTools(deps: ToolDeps) {
       rgPath,
       cwd: deps.cwd,
       ...(deps.logger ? { logger: deps.logger.child("glob") } : {}),
+    }),
+    read_file: createReadFileTool({
+      cwd: deps.cwd,
+      ...(deps.logger ? { logger: deps.logger.child("read_file") } : {}),
     }),
   };
 }
