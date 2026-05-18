@@ -264,6 +264,42 @@ describe("formatToolResult", () => {
     expect(formatToolResult("read_file", "broken")).toBe('"broken"');
   });
 
+  it("[F2.21] write_file result: created", () => {
+    expect(
+      formatToolResult("write_file", {
+        path: "/abs/a.ts",
+        bytesWritten: 1234,
+        created: true,
+        previousBytes: null,
+      }),
+    ).toBe("created · 1.2 KB");
+  });
+
+  it("[F2.22] write_file result: overwrote with previous size", () => {
+    expect(
+      formatToolResult("write_file", {
+        path: "/abs/a.ts",
+        bytesWritten: 4400,
+        created: false,
+        previousBytes: 2100,
+      }),
+    ).toBe("overwrote · 4.3 KB (was 2.1 KB)");
+  });
+
+  it("[F2.23] write_file result: overwrote without previous size", () => {
+    expect(
+      formatToolResult("write_file", {
+        path: "/abs/a.ts",
+        bytesWritten: 800,
+        created: false,
+      }),
+    ).toBe("overwrote · 800 B");
+  });
+
+  it("[F2.24] write_file result: malformed output falls back to preview", () => {
+    expect(formatToolResult("write_file", "oops")).toBe('"oops"');
+  });
+
   it("[F2.15] bash result: exit 0 with line count", () => {
     expect(
       formatToolResult("bash", {
@@ -326,6 +362,41 @@ describe("formatToolResult", () => {
 
   it("[F2.20] bash result: malformed output falls back to preview", () => {
     expect(formatToolResult("bash", "oops")).toBe('"oops"');
+  });
+});
+
+describe("formatToolCall — write_file", () => {
+  it("[F1.14] write_file call: defaults elided, shows only path", () => {
+    expect(
+      formatToolCall("write_file", {
+        path: "a.ts",
+        content: "...",
+        mode: "overwrite",
+        createDirs: true,
+      }),
+    ).toBe('write_file(path: "a.ts")');
+  });
+
+  it("[F1.15] write_file call: non-default mode is kept", () => {
+    expect(
+      formatToolCall("write_file", {
+        path: "a.ts",
+        content: "...",
+        mode: "create",
+        createDirs: true,
+      }),
+    ).toBe('write_file(path: "a.ts", mode: "create")');
+  });
+
+  it("[F1.16] write_file call: non-default createDirs is kept", () => {
+    expect(
+      formatToolCall("write_file", {
+        path: "a.ts",
+        content: "...",
+        mode: "overwrite",
+        createDirs: false,
+      }),
+    ).toBe('write_file(path: "a.ts", createDirs: false)');
   });
 });
 

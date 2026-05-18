@@ -1,5 +1,10 @@
 export { buildTools, type AgentTools, type ToolDeps } from "./registry.js";
 export {
+  createInMemoryFileReadTracker,
+  type FileReadTracker,
+  type FileSnapshot,
+} from "./file-read-tracker.js";
+export {
   GlobInputSchema,
   GlobOutputSchema,
   GLOB_TOOL_DESCRIPTION,
@@ -55,6 +60,21 @@ export {
   type ReadFileErrorCode,
 } from "./read-file/execute.js";
 export { createReadFileTool, toModelOutput as readFileToModelOutput } from "./read-file/tool.js";
+export {
+  WriteFileInputSchema,
+  WriteFileOutputSchema,
+  WRITE_FILE_TOOL_DESCRIPTION,
+  type WriteFileInput,
+  type WriteFileOutput,
+} from "./write-file/schema.js";
+export {
+  executeWriteFile,
+  WriteFileError,
+  MAX_CONTENT_BYTES as WRITE_FILE_MAX_CONTENT_BYTES,
+  type WriteFileDeps,
+  type WriteFileErrorCode,
+} from "./write-file/execute.js";
+export { createWriteFileTool } from "./write-file/tool.js";
 export {
   BashInputSchema,
   BashOutputSchema,

@@ -1,6 +1,7 @@
 import { promises as defaultFs } from "node:fs";
 import { extname, resolve } from "node:path";
 import type { Logger } from "@lordcode/logger";
+import type { FileReadTracker } from "../file-read-tracker.js";
 import type {
   ReadFileImageOutput,
   ReadFileInput,
@@ -23,6 +24,8 @@ export interface ReadFileDeps {
   signal?: AbortSignal;
   /** Test seam: inject a fake `fs/promises`. Defaults to the real one. */
   fs?: Pick<typeof defaultFs, "stat" | "readFile">;
+  /** Shared tracker so write_file can enforce read-before-write. */
+  fileReadTracker?: FileReadTracker;
 }
 
 export type ReadFileErrorCode =
@@ -134,6 +137,10 @@ export async function executeReadFile(
   if (looksLikeImage) {
     const detected = detectImageMediaType(buffer);
     if (detected != null) {
+      deps.fileReadTracker?.record(resolvedPath, {
+        mtimeMs: stats.mtimeMs,
+        size: byteSize,
+      });
       const out: ReadFileImageOutput = {
         kind: "image",
         path: resolvedPath,
@@ -181,6 +188,11 @@ export async function executeReadFile(
   const startLine = startIdx + 1;
   const endLine = clipped.length === 0 ? startLine - 1 : startIdx + clipped.length;
   const truncated = endLine < totalLines;
+
+  deps.fileReadTracker?.record(resolvedPath, {
+    mtimeMs: stats.mtimeMs,
+    size: byteSize,
+  });
 
   const out: ReadFileTextOutput = {
     kind: "text",

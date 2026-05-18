@@ -26,6 +26,7 @@ export function formatToolResult(toolName: string, output: unknown): string {
   if (toolName === "ripgrep") return formatRipgrepResult(output);
   if (toolName === "glob") return formatGlobResult(output);
   if (toolName === "read_file") return formatReadFileResult(output);
+  if (toolName === "write_file") return formatWriteFileResult(output);
   if (toolName === "bash") return formatBashResult(output);
   return safePreview(output);
 }
@@ -129,6 +130,22 @@ function humanBytes(n: number): string {
   return `${formatted} ${units[i]}`;
 }
 
+// ── write_file-specific ─────────────────────────────────────────────────────
+
+function formatWriteFileResult(output: unknown): string {
+  if (!isRecord(output)) return safePreview(output);
+
+  const created = output.created === true;
+  const bytes = typeof output.bytesWritten === "number"
+    ? humanBytes(output.bytesWritten) : "?";
+  const prev = typeof output.previousBytes === "number"
+    ? ` (was ${humanBytes(output.previousBytes)})` : "";
+
+  return created
+    ? `created · ${bytes}`
+    : `overwrote · ${bytes}${prev}`;
+}
+
 // ── bash-specific ───────────────────────────────────────────────────────────
 
 function formatBashResult(output: unknown): string {
@@ -165,9 +182,11 @@ function formatInputArgs(toolName: string, input: unknown): string {
         ? ["pattern", "path", "exclude", "includeHidden", "headLimit"]
         : toolName === "read_file"
           ? ["path", "offset", "limit"]
-          : toolName === "bash"
-            ? ["command", "cwd", "timeout"]
-            : Object.keys(input);
+          : toolName === "write_file"
+            ? ["path", "mode", "createDirs"]
+            : toolName === "bash"
+              ? ["command", "cwd", "timeout"]
+              : Object.keys(input);
 
   const parts: string[] = [];
   for (const key of order) {
@@ -181,6 +200,8 @@ function formatInputArgs(toolName: string, input: unknown): string {
     if (key === "exclude" && Array.isArray(value) && value.length === 0) continue;
     if (toolName === "read_file" && key === "offset" && value === 1) continue;
     if (toolName === "read_file" && key === "limit" && value === 2000) continue;
+    if (toolName === "write_file" && key === "mode" && value === "overwrite") continue;
+    if (toolName === "write_file" && key === "createDirs" && value === true) continue;
     if (toolName === "bash" && key === "timeout" && value === 30000) continue;
     parts.push(`${key}: ${formatScalar(value)}`);
   }
