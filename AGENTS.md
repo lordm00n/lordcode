@@ -40,7 +40,7 @@ lordcode/
 │   ├── shared/   # @lordcode/shared - Shared types / API contracts
 │   ├── server/   # @lordcode/server - Hono HTTP server + agent
 │   ├── tui/      # @lordcode/tui - Ink TUI (project entry point)
-│   ├── web/      # @lordcode/web - [Reserved] Future web UI (placeholder)
+│   ├── web/      # @lordcode/web - [Placeholder] Future web UI (not implemented)
 │   └── logger/   # @lordcode/logger - Logging utilities
 ├── .agents/      # Agent skills configuration
 ├── docs/         # Documentation (specs)
@@ -68,7 +68,7 @@ pnpm build
 # Run tests
 pnpm test
 
-# Lint
+# Lint (root level only)
 pnpm lint
 
 # Clean build artifacts
@@ -88,7 +88,7 @@ pnpm clean
 
 Each package in `packages/` should:
 - Have its own `package.json` with proper exports
-- Include `build`, `typecheck`, `test`, and `clean` scripts
+- Include relevant scripts (`build`, `typecheck`, `clean`; `test` for packages with tests)
 - Export types from `src/index.ts`
 - Keep implementation details private
 
@@ -143,6 +143,7 @@ When working with AI features in this project:
 ## Testing
 
 - Tests are run per-package using `pnpm test` (powered by Vitest)
+- Not all packages have tests (`@lordcode/shared` and `@lordcode/web` currently don't)
 - Follow the testing conventions established in each package
 - Ensure type checking passes before committing
 
