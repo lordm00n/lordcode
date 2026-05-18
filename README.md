@@ -44,6 +44,7 @@ lordcode/
 ├── tsconfig.base.json
 └── packages/
     ├── shared/   # @lordcode/shared  —— 共享类型 / API 契约
+    ├── logger/   # @lordcode/logger  —— 结构化日志库
     ├── server/   # @lordcode/server  —— Hono HTTP server + agent
     ├── tui/      # @lordcode/tui     —— Ink TUI（项目入口）
     └── web/      # @lordcode/web     —— [预留] 未来的 web UI
@@ -172,10 +173,14 @@ pnpm test
 ### `@lordcode/shared`
 所有跨包的纯类型与 API 契约都放这里，避免 TUI 与 server 互相依赖实现。
 
+### `@lordcode/logger`
+结构化日志库，提供文件 transport 和 run-header 格式化。被 `@lordcode/server` 和 `@lordcode/tui` 共用。
+
 ### `@lordcode/server`
 Hono server，提供 agent 与其他 API。同一份代码支持两种启动方式：
 - `src/worker.ts` —— 作为 worker_thread 被 TUI 拉起（生产模式）。
-- `src/index.ts` —— 作为独立 Node 进程启动（开发 / 给 web UI 用）。
+- `src/main.ts` —— 作为独立 Node 进程启动（开发 / 给 web UI 用）。
+- `src/index.ts` —— 模块导出入口，提供 `createApp`、`startServer` 等 API 供外部调用。
 
 ### `@lordcode/tui`
 Ink TUI，项目主入口。启动时通过 `worker_threads` 拉起 server，等待 server 报告端口后再渲染界面。
