@@ -55,3 +55,21 @@ export {
   type ReadFileErrorCode,
 } from "./read-file/execute.js";
 export { createReadFileTool, toModelOutput as readFileToModelOutput } from "./read-file/tool.js";
+export {
+  BashInputSchema,
+  BashOutputSchema,
+  BASH_TOOL_DESCRIPTION,
+  type BashInput,
+  type BashOutput,
+} from "./bash/schema.js";
+export {
+  executeBash,
+  BashError,
+  MAX_OUTPUT_BYTES as BASH_MAX_OUTPUT_BYTES,
+  type BashDeps,
+  type BashRunner,
+  type BashRunnerOptions,
+  type BashRunnerResult,
+} from "./bash/execute.js";
+export { createBashTool } from "./bash/tool.js";
+export { createLocalRunner } from "./bash/runners/local.js";

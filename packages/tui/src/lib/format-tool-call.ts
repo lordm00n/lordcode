@@ -26,6 +26,7 @@ export function formatToolResult(toolName: string, output: unknown): string {
   if (toolName === "ripgrep") return formatRipgrepResult(output);
   if (toolName === "glob") return formatGlobResult(output);
   if (toolName === "read_file") return formatReadFileResult(output);
+  if (toolName === "bash") return formatBashResult(output);
   return safePreview(output);
 }
 
@@ -128,6 +129,29 @@ function humanBytes(n: number): string {
   return `${formatted} ${units[i]}`;
 }
 
+// ── bash-specific ───────────────────────────────────────────────────────────
+
+function formatBashResult(output: unknown): string {
+  if (!isRecord(output)) return safePreview(output);
+
+  const exitCode = typeof output.exitCode === "number" ? output.exitCode : null;
+  const killed = output.killed === true;
+  const truncated = output.truncated === true;
+
+  const stdout = typeof output.stdout === "string" ? output.stdout : "";
+  const stderr = typeof output.stderr === "string" ? output.stderr : "";
+  const lines = (stdout + stderr).split("\n").filter(Boolean).length;
+
+  const parts: string[] = [];
+  if (killed) parts.push("killed");
+  parts.push(`exit ${exitCode ?? "?"}`);
+  parts.push(`${lines} line${lines === 1 ? "" : "s"}`);
+  if (truncated) parts.push("(truncated)");
+  if (killed && !truncated) parts.push("(timeout)");
+
+  return parts.join(" · ");
+}
+
 // ── input-arg formatting ────────────────────────────────────────────────────
 
 function formatInputArgs(toolName: string, input: unknown): string {
@@ -141,7 +165,9 @@ function formatInputArgs(toolName: string, input: unknown): string {
         ? ["pattern", "path", "exclude", "includeHidden", "headLimit"]
         : toolName === "read_file"
           ? ["path", "offset", "limit"]
-          : Object.keys(input);
+          : toolName === "bash"
+            ? ["command", "cwd", "timeout"]
+            : Object.keys(input);
 
   const parts: string[] = [];
   for (const key of order) {
@@ -155,6 +181,7 @@ function formatInputArgs(toolName: string, input: unknown): string {
     if (key === "exclude" && Array.isArray(value) && value.length === 0) continue;
     if (toolName === "read_file" && key === "offset" && value === 1) continue;
     if (toolName === "read_file" && key === "limit" && value === 2000) continue;
+    if (toolName === "bash" && key === "timeout" && value === 30000) continue;
     parts.push(`${key}: ${formatScalar(value)}`);
   }
   return clip(parts.join(", "));

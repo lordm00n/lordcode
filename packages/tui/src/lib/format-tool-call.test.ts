@@ -263,6 +263,97 @@ describe("formatToolResult", () => {
   it("[F2.14] read_file: malformed output falls back to preview", () => {
     expect(formatToolResult("read_file", "broken")).toBe('"broken"');
   });
+
+  it("[F2.15] bash result: exit 0 with line count", () => {
+    expect(
+      formatToolResult("bash", {
+        exitCode: 0,
+        stdout: "line1\nline2\nline3\n",
+        stderr: "",
+        truncated: false,
+        killed: false,
+      }),
+    ).toBe("exit 0 · 3 lines");
+  });
+
+  it("[F2.16] bash result: non-zero exit code", () => {
+    expect(
+      formatToolResult("bash", {
+        exitCode: 1,
+        stdout: "",
+        stderr: "error: not found\n",
+        truncated: false,
+        killed: false,
+      }),
+    ).toBe("exit 1 · 1 line");
+  });
+
+  it("[F2.17] bash result: killed with timeout", () => {
+    expect(
+      formatToolResult("bash", {
+        exitCode: 143,
+        stdout: "partial\noutput\n",
+        stderr: "",
+        truncated: false,
+        killed: true,
+      }),
+    ).toBe("killed · exit 143 · 2 lines · (timeout)");
+  });
+
+  it("[F2.18] bash result: truncated output", () => {
+    expect(
+      formatToolResult("bash", {
+        exitCode: 0,
+        stdout: "lots of output\n",
+        stderr: "",
+        truncated: true,
+        killed: false,
+      }),
+    ).toBe("exit 0 · 1 line · (truncated)");
+  });
+
+  it("[F2.19] bash result: killed + truncated (no timeout suffix)", () => {
+    expect(
+      formatToolResult("bash", {
+        exitCode: 137,
+        stdout: "x\ny\n",
+        stderr: "z\n",
+        truncated: true,
+        killed: true,
+      }),
+    ).toBe("killed · exit 137 · 3 lines · (truncated)");
+  });
+
+  it("[F2.20] bash result: malformed output falls back to preview", () => {
+    expect(formatToolResult("bash", "oops")).toBe('"oops"');
+  });
+});
+
+describe("formatToolCall — bash", () => {
+  it("[F1.10] bash call: shows command, elides default timeout", () => {
+    expect(
+      formatToolCall("bash", { command: "npm test", timeout: 30000 }),
+    ).toBe('bash(command: "npm test")');
+  });
+
+  it("[F1.11] bash call: shows non-default timeout", () => {
+    expect(
+      formatToolCall("bash", { command: "npm run build", timeout: 120000 }),
+    ).toBe('bash(command: "npm run build", timeout: 120000)');
+  });
+
+  it("[F1.12] bash call: includes cwd when provided", () => {
+    expect(
+      formatToolCall("bash", { command: "ls", cwd: "packages/server", timeout: 30000 }),
+    ).toBe('bash(command: "ls", cwd: "packages/server")');
+  });
+
+  it("[F1.13] bash call: long commands are clipped", () => {
+    const long = "a".repeat(200);
+    const out = formatToolCall("bash", { command: long, timeout: 30000 });
+    expect(out.length).toBeLessThan(120);
+    expect(out).toMatch(/…\)$/);
+  });
 });
 
 describe("formatToolError", () => {

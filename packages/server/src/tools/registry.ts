@@ -1,5 +1,6 @@
 import type { Logger } from "@lordcode/logger";
 import { rgPath } from "@vscode/ripgrep";
+import { createBashTool } from "./bash/tool.js";
 import { createGlobTool } from "./glob/tool.js";
 import { createReadFileTool } from "./read-file/tool.js";
 import { createRipgrepTool } from "./ripgrep/tool.js";
@@ -35,6 +36,10 @@ export function buildTools(deps: ToolDeps) {
     read_file: createReadFileTool({
       cwd: deps.cwd,
       ...(deps.logger ? { logger: deps.logger.child("read_file") } : {}),
+    }),
+    bash: createBashTool({
+      cwd: deps.cwd,
+      ...(deps.logger ? { logger: deps.logger.child("bash") } : {}),
     }),
   };
 }

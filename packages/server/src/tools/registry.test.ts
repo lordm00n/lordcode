@@ -3,9 +3,9 @@ import { buildTools } from "./registry.js";
 import type { Logger } from "@lordcode/logger";
 
 describe("buildTools", () => {
-  it("[UT-6] registers ripgrep, glob, and read_file tools", () => {
+  it("[UT-6] registers ripgrep, glob, read_file, and bash tools", () => {
     const tools = buildTools({ cwd: process.cwd() });
-    expect(Object.keys(tools).sort()).toEqual(["glob", "read_file", "ripgrep"]);
+    expect(Object.keys(tools).sort()).toEqual(["bash", "glob", "read_file", "ripgrep"]);
   });
 
   it("[UT-6] gives each tool its own logger child", () => {
@@ -30,5 +30,6 @@ describe("buildTools", () => {
     expect(children).toContain("ripgrep");
     expect(children).toContain("glob");
     expect(children).toContain("read_file");
+    expect(children).toContain("bash");
   });
 });
