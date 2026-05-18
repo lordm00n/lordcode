@@ -255,6 +255,70 @@ describe("accumulate — tool-error", () => {
   });
 });
 
+describe("accumulate — tool input lifecycle is UI-only", () => {
+  it("[UT-A1] tool-input-start/progress/end do not mutate history or pending state", () => {
+    const state = fold([
+      { type: "start", model: "m" },
+      {
+        type: "tool-input-start",
+        toolCallId: "c1",
+        toolName: "write_file",
+      },
+      {
+        type: "tool-input-progress",
+        toolCallId: "c1",
+        toolName: "write_file",
+        inputBytes: 128,
+        elapsedMs: 25,
+      },
+      {
+        type: "tool-input-end",
+        toolCallId: "c1",
+        toolName: "write_file",
+        inputBytes: 128,
+        elapsedMs: 30,
+      },
+    ]);
+    expect(state.history).toEqual([]);
+    expect(state.pendingAssistant).toBeNull();
+    expect(state.pendingTool).toBeNull();
+  });
+
+  it("[UT-A2] tool-input events between text and tool-call do not flush assistant text", () => {
+    const state = fold([
+      { type: "start", model: "m" },
+      { type: "delta", text: "writing file" },
+      {
+        type: "tool-input-start",
+        toolCallId: "c1",
+        toolName: "write_file",
+      },
+      {
+        type: "tool-input-end",
+        toolCallId: "c1",
+        toolName: "write_file",
+        inputBytes: 32,
+        elapsedMs: 10,
+      },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "write_file",
+        input: { path: "a.ts" },
+      },
+    ]);
+    expect(state.history).toEqual([]);
+    expect(state.pendingAssistant?.text).toBe("writing file");
+    expect(state.pendingAssistant?.toolCalls).toEqual([
+      {
+        toolCallId: "c1",
+        toolName: "write_file",
+        input: { path: "a.ts" },
+      },
+    ]);
+  });
+});
+
 describe("accumulate — abort & in-flight handling", () => {
   it("[HA5.1] stream cut off mid-assistant text → pendingAssistant carries the partial, history empty", () => {
     const events: AgentStreamEvent[] = [

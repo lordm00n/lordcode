@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatLiveToolInput,
   formatToolCall,
   formatToolError,
   formatToolResult,
@@ -93,6 +94,42 @@ describe("formatToolCall", () => {
         limit: 50,
       }),
     ).toBe('read_file(path: "a.ts", offset: 100, limit: 50)');
+  });
+});
+
+describe("formatLiveToolInput", () => {
+  it("[UT-T1] formats preparing placeholder without bytes", () => {
+    expect(
+      formatLiveToolInput({
+        toolCallId: "c1",
+        toolName: "write_file",
+        phase: "preparing",
+      }),
+    ).toBe("write_file preparing input...");
+  });
+
+  it("[UT-T2] formats preparing placeholder with byte progress", () => {
+    expect(
+      formatLiveToolInput({
+        toolCallId: "c1",
+        toolName: "write_file",
+        phase: "preparing",
+        inputBytes: 128 * 1024,
+        elapsedMs: 50,
+      }),
+    ).toBe("write_file preparing input... 128 KB");
+  });
+
+  it("[UT-T3] formats executing placeholder after input end", () => {
+    expect(
+      formatLiveToolInput({
+        toolCallId: "c1",
+        toolName: "write_file",
+        phase: "executing",
+        inputBytes: 128 * 1024,
+        elapsedMs: 50,
+      }),
+    ).toBe("write_file executing...");
   });
 });
 

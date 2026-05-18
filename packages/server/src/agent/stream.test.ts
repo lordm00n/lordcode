@@ -376,19 +376,118 @@ describe("streamAgent", () => {
     expect(ids).toEqual(["a", "a", "b", "b"]);
   });
 
-  // B6.15 — tool-input-* chunks (the model streaming the JSON arguments of a
-  // tool call piece by piece) are observed on `server:agent:stream` for
-  // diagnostics, but MUST NOT be lifted to the wire — TUI only sees the
-  // assembled `tool-call` once the SDK dispatches it. This guards the long
-  // silent-window contract: zero new AgentStreamEvent frames during the
-  // stream-the-args phase.
-  it("[B6.15] tool-input-start/delta/end chunks emit no wire events", async () => {
+  it("[UT-S1] forwards tool-input-start with SDK id mapped to toolCallId", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "tool-input-start", id: "call_x", toolName: "write_file" },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    expect(events).toContainEqual({
+      type: "tool-input-start",
+      toolCallId: "call_x",
+      toolName: "write_file",
+    });
+  });
+
+  it("[UT-S2] does not emit tool-input-progress before throttle thresholds", async () => {
     const fakeStream: StreamTextLike = {
       fullStream: arrayToFullStream([
         { type: "tool-input-start", id: "call_x", toolName: "write_file" },
         { type: "tool-input-delta", id: "call_x", delta: '{"path":"a.t' },
         { type: "tool-input-delta", id: "call_x", delta: 'xt","content"' },
         { type: "tool-input-delta", id: "call_x", delta: ':"hello"}' },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    expect(events.map((e) => e.type)).not.toContain("tool-input-progress");
+  });
+
+  it("[UT-S3] emits throttled tool-input-progress with aggregate bytes", async () => {
+    const largeDelta = "x".repeat(64 * 1024);
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "tool-input-start", id: "call_x", toolName: "write_file" },
+        { type: "tool-input-delta", id: "call_x", delta: largeDelta },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    const progress = events.find(
+      (e): e is Extract<AgentStreamEvent, { type: "tool-input-progress" }> =>
+        e.type === "tool-input-progress",
+    );
+    expect(progress).toMatchObject({
+      type: "tool-input-progress",
+      toolCallId: "call_x",
+      toolName: "write_file",
+      inputBytes: largeDelta.length,
+    });
+    expect(typeof progress?.elapsedMs).toBe("number");
+  });
+
+  it("[UT-S4] forwards tool-input-end with final aggregate bytes", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "tool-input-start", id: "call_x", toolName: "write_file" },
+        { type: "tool-input-delta", id: "call_x", delta: "hello" },
+        { type: "tool-input-end", id: "call_x" },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    const end = events.find(
+      (e): e is Extract<AgentStreamEvent, { type: "tool-input-end" }> =>
+        e.type === "tool-input-end",
+    );
+    expect(end).toMatchObject({
+      type: "tool-input-end",
+      toolCallId: "call_x",
+      toolName: "write_file",
+      inputBytes: 5,
+    });
+    expect(typeof end?.elapsedMs).toBe("number");
+  });
+
+  it("[UT-S5] preserves tool-input lifecycle order before formal tool events", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "tool-input-start", id: "call_x", toolName: "write_file" },
+        { type: "tool-input-delta", id: "call_x", delta: "hello" },
         { type: "tool-input-end", id: "call_x" },
         {
           type: "tool-call",
@@ -416,6 +515,8 @@ describe("streamAgent", () => {
     );
     expect(events.map((e) => e.type)).toEqual([
       "start",
+      "tool-input-start",
+      "tool-input-end",
       "tool-call",
       "tool-result",
       "finish",

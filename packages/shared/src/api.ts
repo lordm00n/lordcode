@@ -91,6 +91,9 @@ export interface AgentChatRequest {
  *
  * Tool events (multi-step agent loop):
  * - `tool-call` precedes its paired `tool-result` / `tool-error` (matched by `toolCallId`).
+ * - `tool-input-start` / `tool-input-progress` / `tool-input-end` are UI-only
+ *   lifecycle frames for streamed argument generation. They must not enter
+ *   provider-facing `ModelMessage[]` history.
  * - A single turn may emit multiple tool calls; they freely interleave with `delta` /
  *   `reasoning-*` from the same agent loop.
  * - `input` / `output` are wire-`unknown`: the server emits whatever the tool produced,
@@ -111,6 +114,21 @@ export type AgentStreamEvent =
       aborted?: boolean;
     }
   | { type: "error"; message: string }
+  | { type: "tool-input-start"; toolCallId: string; toolName: string }
+  | {
+      type: "tool-input-progress";
+      toolCallId: string;
+      toolName: string;
+      inputBytes: number;
+      elapsedMs: number;
+    }
+  | {
+      type: "tool-input-end";
+      toolCallId: string;
+      toolName: string;
+      inputBytes: number;
+      elapsedMs: number;
+    }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
   | { type: "tool-error"; toolCallId: string; toolName: string; message: string };

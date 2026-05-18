@@ -277,6 +277,7 @@ export async function* streamAgent(
             lastLoggedBytes: 0,
           });
           log?.debug("chunk", { type: "tool-input-start", id, toolName });
+          yield { type: "tool-input-start", toolCallId: id, toolName };
           break;
         }
         case "tool-input-delta": {
@@ -301,6 +302,13 @@ export async function* streamAgent(
               bytes: entry.bytes,
               elapsedMs: now - entry.startedAt,
             });
+            yield {
+              type: "tool-input-progress",
+              toolCallId: id,
+              toolName: entry.toolName,
+              inputBytes: entry.bytes,
+              elapsedMs: now - entry.startedAt,
+            };
             entry.lastLoggedAt = now;
             entry.lastLoggedBytes = entry.bytes;
           }
@@ -310,16 +318,34 @@ export async function* streamAgent(
           const id = chunk.id ?? "";
           const entry = inputProgress.get(id);
           if (entry) {
+            const elapsedMs = Date.now() - entry.startedAt;
             log?.debug("chunk", {
               type: "tool-input-end",
               id,
               toolName: entry.toolName,
               bytes: entry.bytes,
-              elapsedMs: Date.now() - entry.startedAt,
+              elapsedMs,
             });
+            yield {
+              type: "tool-input-end",
+              toolCallId: id,
+              toolName: entry.toolName,
+              inputBytes: entry.bytes,
+              elapsedMs,
+            };
             inputProgress.delete(id);
           } else {
-            log?.debug("chunk", { type: "tool-input-end", id });
+            const toolName = chunk.toolName ?? "";
+            log?.debug("chunk", { type: "tool-input-end", id, toolName });
+            if (toolName.length > 0) {
+              yield {
+                type: "tool-input-end",
+                toolCallId: id,
+                toolName,
+                inputBytes: 0,
+                elapsedMs: 0,
+              };
+            }
           }
           break;
         }

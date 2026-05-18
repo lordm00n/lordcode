@@ -16,9 +16,25 @@
 
 const MAX_INPUT_CHARS = 80;
 
+export interface LiveToolInput {
+  toolCallId: string;
+  toolName: string;
+  phase: "preparing" | "executing";
+  inputBytes?: number;
+  elapsedMs?: number;
+}
+
 /** Render the `tool-call` line. */
 export function formatToolCall(toolName: string, input: unknown): string {
   return `${toolName}(${formatInputArgs(toolName, input)})`;
+}
+
+/** Render the pre-`tool-call` input-generation placeholder line. */
+export function formatLiveToolInput(input: LiveToolInput): string {
+  if (input.phase === "executing") return `${input.toolName} executing...`;
+  const bytes =
+    typeof input.inputBytes === "number" ? ` ${humanBytes(input.inputBytes)}` : "";
+  return `${input.toolName} preparing input...${bytes}`;
 }
 
 /** Render the `tool-result` line. */

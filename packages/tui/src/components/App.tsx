@@ -31,10 +31,15 @@ import {
   renderContent,
 } from "../lib/compose-message.js";
 import {
+  formatLiveToolInput,
   formatToolCall,
   formatToolError,
   formatToolResult,
 } from "../lib/format-tool-call.js";
+import {
+  applyLiveToolInputEvent,
+  type LiveToolInput,
+} from "../lib/live-tool-inputs.js";
 import {
   deleteAt,
   deleteBefore,
@@ -61,6 +66,7 @@ interface AppProps {
 interface StreamingState {
   text: string;
   reasoning: string;
+  toolInputs: LiveToolInput[];
   /**
    * `Date.now()` when the current (in-flight) reasoning block started, or null
    * when no reasoning is currently in progress.
@@ -232,6 +238,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       setStreaming({
         text: "",
         reasoning: "",
+        toolInputs: [],
         reasoningStartedAt: null,
         reasoningDurationMs: null,
       });
@@ -240,6 +247,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       // intentionally not preserved on the wire (spec §3 decision #12).
       let accText = "";
       let accReasoning = "";
+      let toolInputs: LiveToolInput[] = [];
       let reasoningStartedAt: number | null = null;
       let reasoningDurationMs: number | null = null;
       let receivedStart = false;
@@ -258,6 +266,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       const snapshot = (): StreamingState => ({
         text: accText,
         reasoning: accReasoning,
+        toolInputs,
         reasoningStartedAt,
         reasoningDurationMs,
       });
@@ -273,6 +282,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
             receivedStart = true;
             accText = "";
             accReasoning = "";
+            toolInputs = [];
             reasoningStartedAt = null;
             reasoningDurationMs = null;
             log.debug("stream: start", { model: ev.model });
@@ -300,6 +310,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           } else if (ev.type === "reasoning-end") {
             closeReasoning();
             setStreaming(snapshot());
+          } else if (ev.type === "tool-input-start") {
+            closeReasoning();
+            toolInputs = applyLiveToolInputEvent(toolInputs, ev);
+            setStreaming(snapshot());
+          } else if (
+            ev.type === "tool-input-progress" ||
+            ev.type === "tool-input-end"
+          ) {
+            toolInputs = applyLiveToolInputEvent(toolInputs, ev);
+            setStreaming(snapshot());
           } else if (ev.type === "tool-call") {
             log.debug("stream: tool-call", {
               toolCallId: ev.toolCallId,
@@ -310,6 +330,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
             // The accumulator already folded the prior text into history.
             accText = "";
             accReasoning = "";
+            toolInputs = applyLiveToolInputEvent(toolInputs, ev);
             closeReasoning();
             reasoningDurationMs = null;
             setStreaming(snapshot());
@@ -318,12 +339,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
               toolCallId: ev.toolCallId,
               toolName: ev.toolName,
             });
+            toolInputs = applyLiveToolInputEvent(toolInputs, ev);
+            setStreaming(snapshot());
           } else if (ev.type === "tool-error") {
             log.warn("stream: tool-error", {
               toolCallId: ev.toolCallId,
               toolName: ev.toolName,
               message: ev.message,
             });
+            toolInputs = applyLiveToolInputEvent(toolInputs, ev);
+            setStreaming(snapshot());
           } else if (ev.type === "finish") {
             closeReasoning();
             log.debug("stream: finish", {
@@ -549,6 +574,9 @@ export function App({ api, baseUrl, onExit }: AppProps) {
                 <Text color="gray">▌</Text>
               </Box>
             ) : null}
+            {streaming.toolInputs.map((input) => (
+              <LiveToolInputView key={input.toolCallId} input={input} />
+            ))}
           </Box>
         ) : null}
       </Box>
@@ -558,6 +586,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         cursor={input.cursor}
         isStreaming={streaming != null}
       />
+    </Box>
+  );
+}
+
+function LiveToolInputView({ input }: { input: LiveToolInput }) {
+  return (
+    <Box>
+      <Text color="cyan" dimColor>
+        → {formatLiveToolInput(input)}
+      </Text>
     </Box>
   );
 }

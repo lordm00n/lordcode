@@ -16,7 +16,7 @@
  * - `start` is treated as a hard reset of pending state for the new turn:
  *   any leftover in-flight bits from a previous run (e.g. an aborted turn that
  *   didn't manage to flush) are dropped before we start accumulating again.
- * - `reasoning-*` and `error` are UI-only and never touch history.
+ * - `reasoning-*`, `tool-input-*`, and `error` are UI-only and never touch history.
  */
 import type {
   AgentStreamEvent,
@@ -194,6 +194,9 @@ export function accumulate(
     case "reasoning-start":
     case "reasoning-delta":
     case "reasoning-end":
+    case "tool-input-start":
+    case "tool-input-progress":
+    case "tool-input-end":
     case "error":
       return state;
   }
