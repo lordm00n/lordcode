@@ -23,16 +23,47 @@ import { resolveLanguageModel as defaultResolveLanguageModel } from "./provider.
 const AGENT_LOOP_MAX_STEPS = 10;
 
 /**
+ * Throttle thresholds for `tool-input-progress` debug lines. The SDK emits
+ * one `tool-input-delta` per tokenised JSON fragment of a tool call's input,
+ * which can be hundreds of frames for a single `write_file` content. We keep
+ * one progress line per stream of tool input — emitted at most every
+ * `_INTERVAL_MS` OR every `_BYTES`, whichever fires first — so the long
+ * silent window between "model decided to call write_file" and "tool-call
+ * dispatched" is visible without flooding the log.
+ */
+const TOOL_INPUT_LOG_INTERVAL_MS = 1000;
+const TOOL_INPUT_LOG_BYTES = 64 * 1024;
+
+/**
+ * Per-call accumulator for `tool-input-*` streams. Keyed by `chunk.id` (= the
+ * future `toolCallId`). Lifecycle: created on `tool-input-start`, updated on
+ * each `tool-input-delta`, deleted on `tool-input-end`.
+ */
+interface ToolInputProgress {
+  toolName: string;
+  bytes: number;
+  startedAt: number;
+  lastLoggedAt: number;
+  lastLoggedBytes: number;
+}
+
+/**
  * One frame of `result.fullStream` that this generator can interpret.
  *
- * The full chunk universe is much larger (text-start, text-end, tool-input-*,
- * source, file, start, start-step, finish-step, finish, abort, raw, …); we
+ * The full chunk universe is much larger (source, file, raw, finish, …); we
  * keep the shape loose so the test fakes don't have to model fields we don't
  * read.
  *
- * Tool-related fields (`toolCallId`, `toolName`, `input`, `output`) are only
- * populated on the `tool-call` / `tool-result` / `tool-error` chunks — the
- * other variants leave them undefined.
+ * Field presence by chunk type (see SDK `TextStreamPart`):
+ * - `text-delta` / `reasoning-delta` → `text`, `id`
+ * - `text-start` / `text-end` / `reasoning-start` / `reasoning-end` → `id`
+ * - `tool-input-start` → `id`, `toolName`
+ * - `tool-input-delta` → `id`, `delta`
+ * - `tool-input-end` → `id`
+ * - `tool-call` / `tool-result` / `tool-error` → `toolCallId`, `toolName`,
+ *   plus `input` / `output` / `error`
+ * - `error` → `error`
+ * - `abort` → `reason`
  */
 export interface FullStreamChunk {
   /** Discriminator — see https://ai-sdk.dev/docs/ai-sdk-core/generating-text#fullstream-property */
@@ -43,6 +74,12 @@ export interface FullStreamChunk {
   error?: unknown;
   /** Present on tool-call / tool-result / tool-error. */
   toolCallId?: string;
+  /** Present on text-* / reasoning-* / tool-input-* chunks (= future toolCallId). */
+  id?: string;
+  /** Present on tool-input-delta. */
+  delta?: string;
+  /** Present on abort chunks. */
+  reason?: string;
   toolName?: string;
   input?: unknown;
   output?: unknown;
@@ -180,6 +217,8 @@ export async function* streamAgent(
   });
   yield { type: "start", model: cfg.name };
 
+  const inputProgress = new Map<string, ToolInputProgress>();
+
   try {
     for await (const chunk of result.fullStream) {
       if (ctx.signal?.aborted) {
@@ -209,6 +248,79 @@ export async function* streamAgent(
         case "reasoning-end": {
           log?.debug("chunk", { type: "reasoning-end" });
           yield { type: "reasoning-end" };
+          break;
+        }
+        case "text-start": {
+          // Bracket marker; UI tracks prose via `text-delta`. Logged for
+          // traceability so the order of model-side text/tool-call blocks
+          // is reconstructable from `server:agent:stream`.
+          log?.debug("chunk", { type: "text-start", id: chunk.id });
+          break;
+        }
+        case "text-end": {
+          log?.debug("chunk", { type: "text-end", id: chunk.id });
+          break;
+        }
+        case "tool-input-start": {
+          // The model has begun streaming the JSON arguments of a tool call.
+          // The matching `tool-call` won't arrive until `tool-input-end`, so
+          // for big inputs (e.g. write_file content) this opens a long
+          // silent window — start tracking so we can emit progress lines.
+          const id = chunk.id ?? "";
+          const toolName = chunk.toolName ?? "";
+          const now = Date.now();
+          inputProgress.set(id, {
+            toolName,
+            bytes: 0,
+            startedAt: now,
+            lastLoggedAt: now,
+            lastLoggedBytes: 0,
+          });
+          log?.debug("chunk", { type: "tool-input-start", id, toolName });
+          break;
+        }
+        case "tool-input-delta": {
+          // Throttled: emit at most one `tool-input-progress` line per
+          // TOOL_INPUT_LOG_INTERVAL_MS or every TOOL_INPUT_LOG_BYTES of
+          // accumulated wire bytes (whichever first). Logging every delta
+          // would flood the channel — a single write_file can be 1000+ frames.
+          const id = chunk.id ?? "";
+          const entry = inputProgress.get(id);
+          if (!entry) break;
+          entry.bytes += Buffer.byteLength(chunk.delta ?? "", "utf8");
+          const now = Date.now();
+          const sinceLogged = entry.bytes - entry.lastLoggedBytes;
+          if (
+            now - entry.lastLoggedAt >= TOOL_INPUT_LOG_INTERVAL_MS ||
+            sinceLogged >= TOOL_INPUT_LOG_BYTES
+          ) {
+            log?.debug("chunk", {
+              type: "tool-input-progress",
+              id,
+              toolName: entry.toolName,
+              bytes: entry.bytes,
+              elapsedMs: now - entry.startedAt,
+            });
+            entry.lastLoggedAt = now;
+            entry.lastLoggedBytes = entry.bytes;
+          }
+          break;
+        }
+        case "tool-input-end": {
+          const id = chunk.id ?? "";
+          const entry = inputProgress.get(id);
+          if (entry) {
+            log?.debug("chunk", {
+              type: "tool-input-end",
+              id,
+              toolName: entry.toolName,
+              bytes: entry.bytes,
+              elapsedMs: Date.now() - entry.startedAt,
+            });
+            inputProgress.delete(id);
+          } else {
+            log?.debug("chunk", { type: "tool-input-end", id });
+          }
           break;
         }
         case "tool-call": {
@@ -251,6 +363,19 @@ export async function* streamAgent(
           };
           break;
         }
+        case "start-step":
+        case "finish-step": {
+          // Step boundaries inside the agent tool loop — useful when reading
+          // the log to tell which iteration produced which tool-call. We
+          // intentionally don't lift them onto the wire (TUI doesn't render
+          // step structure separately).
+          log?.debug("chunk", { type: chunk.type });
+          break;
+        }
+        case "abort": {
+          log?.debug("chunk", { type: "abort", reason: chunk.reason });
+          break;
+        }
         case "error": {
           // `fullStream` surfaces non-fatal provider errors as data instead of throwing.
           // The SDK's event-recorder also enqueues string-typed `error` chunks for
@@ -273,10 +398,11 @@ export async function* streamAgent(
           return;
         }
         default:
-          // Placeholder: text-start/text-end, tool-input-* (input streaming —
-          // intentionally not surfaced; we wait for the complete tool-call),
-          // source, file, start, start-step, finish-step, finish, abort, raw
-          // — intentionally ignored until later iterations add support.
+          // Remaining placeholders: `start` and `finish` (we synthesise our
+          // own equivalents around the loop), plus `source`, `file`,
+          // `tool-output-denied`, `tool-approval-request`, `raw` — none are
+          // surfaced to the wire yet and not interesting enough to log on
+          // their own.
           break;
       }
     }

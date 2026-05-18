@@ -376,6 +376,52 @@ describe("streamAgent", () => {
     expect(ids).toEqual(["a", "a", "b", "b"]);
   });
 
+  // B6.15 — tool-input-* chunks (the model streaming the JSON arguments of a
+  // tool call piece by piece) are observed on `server:agent:stream` for
+  // diagnostics, but MUST NOT be lifted to the wire — TUI only sees the
+  // assembled `tool-call` once the SDK dispatches it. This guards the long
+  // silent-window contract: zero new AgentStreamEvent frames during the
+  // stream-the-args phase.
+  it("[B6.15] tool-input-start/delta/end chunks emit no wire events", async () => {
+    const fakeStream: StreamTextLike = {
+      fullStream: arrayToFullStream([
+        { type: "tool-input-start", id: "call_x", toolName: "write_file" },
+        { type: "tool-input-delta", id: "call_x", delta: '{"path":"a.t' },
+        { type: "tool-input-delta", id: "call_x", delta: 'xt","content"' },
+        { type: "tool-input-delta", id: "call_x", delta: ':"hello"}' },
+        { type: "tool-input-end", id: "call_x" },
+        {
+          type: "tool-call",
+          toolCallId: "call_x",
+          toolName: "write_file",
+          input: { path: "a.txt", content: "hello" },
+        },
+        {
+          type: "tool-result",
+          toolCallId: "call_x",
+          toolName: "write_file",
+          output: { path: "/tmp/a.txt", bytesWritten: 5, created: true, previousBytes: null },
+        },
+      ]),
+      finishReason: Promise.resolve("stop"),
+    };
+    const events = await collect(
+      streamAgent([], {
+        store: fakeStore(cfg),
+        resolveApiKey: () => "sk-fake",
+        resolveLanguageModel: () => fakeModel,
+        streamText: () => fakeStream,
+        tools: {},
+      }),
+    );
+    expect(events.map((e) => e.type)).toEqual([
+      "start",
+      "tool-call",
+      "tool-result",
+      "finish",
+    ]);
+  });
+
   // B6.14 — streamText is invoked with a `tools` set and a `stopWhen` cap.
   // Defending against regression: it would be easy to forget either when
   // refactoring stream.ts.

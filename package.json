@@ -9,7 +9,7 @@
   },
   "packageManager": "pnpm@10.17.1",
   "scripts": {
-    "dev": "cross-env LORDCODE_DEBUG=1 pnpm --filter @lordcode/tui dev",
+    "dev": "cross-env LORDCODE_DEBUG=1 pnpm --filter @lordcode/server build && cross-env LORDCODE_DEBUG=1 pnpm exec tsx --tsconfig packages/tui/tsconfig.dev.json packages/tui/src/main.tsx",
     "dev:server": "cross-env LORDCODE_DEBUG=1 pnpm --filter @lordcode/server dev",
     "build": "pnpm -r --filter './packages/*' build",
     "typecheck": "pnpm -r --filter './packages/*' typecheck",

@@ -59,73 +59,98 @@ export async function executeWriteFile(
   const fs = deps.fs ?? defaultFs;
   const startedAt = Date.now();
 
-  // 1. Size cap check
   const bytes = Buffer.byteLength(input.content, "utf8");
-  if (bytes > MAX_CONTENT_BYTES) {
-    throw new WriteFileError(
-      `content too large: ${bytes} bytes exceeds ${MAX_CONTENT_BYTES}-byte cap`,
-      { code: "TOO_LARGE", byteSize: bytes },
-    );
-  }
-
-  // 2. Resolve path
   const resolvedPath = resolve(deps.cwd, input.path);
 
-  // 3. Path filter
-  if (deps.pathFilter && !deps.pathFilter(resolvedPath)) {
-    throw new WriteFileError(
-      `path rejected by filter: ${resolvedPath}`,
-      { code: "REJECTED" },
+  // Single-line entry trace. Pairs with `write_file done` (success) or
+  // `write_file failed` / `write_file aborted` so a single grep on
+  // `server:tool:write_file` reconstructs the full lifecycle of the call.
+  log?.debug("write_file start", {
+    path: resolvedPath,
+    mode: input.mode,
+    createDirs: input.createDirs,
+    bytes,
+  });
+
+  /**
+   * Centralised throw site so every `WriteFileError` is preceded by one
+   * `write_file failed` warn line carrying the error `code` (which the
+   * upstream `chunk: tool-error` log loses — it only sees `message`).
+   */
+  const fail = (
+    code: WriteFileErrorCode,
+    message: string,
+    extra?: { byteSize?: number; underlying?: unknown },
+  ): never => {
+    log?.warn("write_file failed", {
+      code,
+      path: resolvedPath,
+      ...(extra?.byteSize !== undefined ? { byteSize: extra.byteSize } : {}),
+    });
+    throw new WriteFileError(message, {
+      code,
+      ...(extra?.byteSize !== undefined ? { byteSize: extra.byteSize } : {}),
+      ...(extra?.underlying !== undefined ? { underlying: extra.underlying } : {}),
+    });
+  };
+
+  // 1. Size cap check
+  if (bytes > MAX_CONTENT_BYTES) {
+    fail(
+      "TOO_LARGE",
+      `content too large: ${bytes} bytes exceeds ${MAX_CONTENT_BYTES}-byte cap`,
+      { byteSize: bytes },
     );
   }
 
-  // 4. Stat existing file
+  // 2. Path filter
+  if (deps.pathFilter && !deps.pathFilter(resolvedPath)) {
+    fail("REJECTED", `path rejected by filter: ${resolvedPath}`);
+  }
+
+  // 3. Stat existing file
   let existing: Awaited<ReturnType<typeof fs.stat>> | null = null;
   try {
     existing = await fs.stat(resolvedPath);
   } catch (err) {
-    if (readNodeErrorCode(err) !== "ENOENT") throw mapStatError(err, resolvedPath);
+    if (readNodeErrorCode(err) !== "ENOENT") {
+      const mapped = mapStatError(err, resolvedPath);
+      log?.warn("write_file failed", { code: mapped.cause.code, path: resolvedPath });
+      throw mapped;
+    }
   }
 
-  // 5. Mode check
+  // 4. Mode check
   if (existing && existing.isDirectory()) {
-    throw new WriteFileError(
-      `path is a directory: ${resolvedPath}`,
-      { code: "EISDIR" },
-    );
+    fail("EISDIR", `path is a directory: ${resolvedPath}`);
   }
   if (existing && input.mode === "create") {
-    throw new WriteFileError(
-      `file already exists: ${resolvedPath}`,
-      { code: "EEXIST" },
-    );
+    fail("EEXIST", `file already exists: ${resolvedPath}`);
   }
 
-  // 6. Read-before-write check (only for existing files)
+  // 5. Read-before-write check (only for existing files)
   if (existing && deps.fileReadTracker) {
     const recorded = deps.fileReadTracker.get(resolvedPath);
 
     if (!recorded) {
-      throw new WriteFileError(
+      fail(
+        "READ_REQUIRED",
         "file exists but has not been read in this session — call read_file first",
-        { code: "READ_REQUIRED" },
       );
-    }
-
-    if (recorded.mtimeMs !== existing.mtimeMs || recorded.size !== Number(existing.size)) {
-      throw new WriteFileError(
-        "file modified since last read — re-read before writing",
-        { code: "STALE_READ" },
-      );
+    } else if (
+      recorded.mtimeMs !== existing.mtimeMs ||
+      recorded.size !== Number(existing.size)
+    ) {
+      fail("STALE_READ", "file modified since last read — re-read before writing");
     }
   }
 
-  // 7. Create parent dirs
+  // 6. Create parent dirs
   if (input.createDirs !== false) {
     await fs.mkdir(dirname(resolvedPath), { recursive: true });
   }
 
-  // 8. Atomic write: tmp + rename
+  // 7. Atomic write: tmp + rename
   const tmpPath = `${resolvedPath}.tmp.${randomBytes(6).toString("hex")}`;
   try {
     await fs.writeFile(tmpPath, input.content, {
@@ -135,11 +160,19 @@ export async function executeWriteFile(
     await fs.rename(tmpPath, resolvedPath);
   } catch (err) {
     await fs.unlink(tmpPath).catch(() => {});
-    if (isAbortError(err)) throw err;
-    throw mapWriteError(err, resolvedPath);
+    if (isAbortError(err)) {
+      log?.debug("write_file aborted", {
+        path: resolvedPath,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw err;
+    }
+    const mapped = mapWriteError(err, resolvedPath);
+    log?.warn("write_file failed", { code: mapped.cause.code, path: resolvedPath });
+    throw mapped;
   }
 
-  // 9. Update tracker with new snapshot
+  // 8. Update tracker with new snapshot
   const after = await fs.stat(resolvedPath);
   deps.fileReadTracker?.record(resolvedPath, {
     mtimeMs: after.mtimeMs,
