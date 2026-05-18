@@ -2,12 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { LanguageModel } from "ai";
 import type {
   AgentStreamEvent,
-  ChatMessage,
   ModelConfig,
+  ModelMessage,
 } from "@lordcode/shared";
 import {
   streamAgent,
   type FullStreamChunk,
+  type StreamTextFn,
   type StreamTextLike,
 } from "./stream.js";
 
@@ -79,7 +80,7 @@ describe("streamAgent", () => {
 
   // B6.3 + B6.4
   it("[B6.3+B6.4] emits start → delta(s) → finish in order with model name + finish metadata", async () => {
-    const messages: ChatMessage[] = [{ role: "user", content: "hi" }];
+    const messages: ModelMessage[] = [{ role: "user", content: "hi" }];
     const fakeStream: StreamTextLike = {
       fullStream: arrayToFullStream(textChunks("Hel", "lo")),
       finishReason: Promise.resolve("stop"),

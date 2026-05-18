@@ -20,6 +20,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "devDependencies": {
+    "ai": "^6.0.176",
     "typescript": "^5.6.3"
   }
 }

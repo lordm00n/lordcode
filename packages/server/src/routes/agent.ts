@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming";
 import type {
   AgentChatRequest,
   AgentStreamEvent,
-  ChatMessage,
+  ModelMessage,
 } from "@lordcode/shared";
 import type { AppDeps } from "../app.js";
 import { streamAgent } from "../agent/index.js";
@@ -26,7 +26,7 @@ export function agentRoute(deps: AppDeps) {
       log.warn("invalid body: messages must be an array");
       return c.json({ error: "messages must be an array" }, 400);
     }
-    const messages: ChatMessage[] = body.messages;
+    const messages: ModelMessage[] = body.messages;
     log.debug("chat turn requested", { messages: messages.length });
 
     return streamSSE(c, async (stream) => {

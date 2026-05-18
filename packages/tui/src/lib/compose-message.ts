@@ -15,7 +15,12 @@
  * Unresolved placeholders (id not in the map) are left as literal text so a
  * user typing `[image:image/png#whatever]` by hand stays as text.
  */
-import type { ContentPart, ImagePart } from "@lordcode/shared";
+import type {
+  ContentPart,
+  FilePart,
+  ImagePart,
+  TextPart,
+} from "@lordcode/shared";
 
 /**
  * Minimal shape we need from an entry in `pendingImagesRef`. Kept structural
@@ -85,14 +90,25 @@ export function composeContent(
 }
 
 /**
- * Render any `ChatMessage.content` value as a single string for in-TUI display.
- * Image parts collapse to a `[image:<mime>]` placeholder so users can see
- * where the image was attached without dumping base64 into the viewport.
+ * Render any user-style `content` value as a single string for in-TUI display.
+ * Image / file parts collapse to a `[image:<mime>]` / `[file:<mime>]`
+ * placeholder so users can see where the attachment was without dumping
+ * base64 into the viewport.
+ *
+ * Accepts the wider `UserContent` shape (which adds `FilePart` on top of
+ * `ContentPart`) so we can hand the same renderer arbitrary user-message
+ * payloads coming back from history.
  */
-export function renderContent(content: string | ContentPart[]): string {
+export function renderContent(
+  content: string | Array<TextPart | ImagePart | FilePart>,
+): string {
   if (typeof content === "string") return content;
   return content
-    .map((p) => (p.type === "text" ? p.text : `[image:${p.mediaType}]`))
+    .map((p) => {
+      if (p.type === "text") return p.text;
+      if (p.type === "image") return `[image:${p.mediaType ?? "?"}]`;
+      return `[file:${p.mediaType}]`;
+    })
     .join("");
 }
 

@@ -8,8 +8,8 @@ import {
 import type { Logger } from "@lordcode/logger";
 import type {
   AgentStreamEvent,
-  ChatMessage,
   ModelConfig,
+  ModelMessage,
 } from "@lordcode/shared";
 import type { ConfigStore } from "../config/store.js";
 import { buildTools } from "../tools/registry.js";
@@ -63,7 +63,7 @@ export interface StreamTextLike {
 
 export type StreamTextFn = (args: {
   model: LanguageModel;
-  messages: ChatMessage[];
+  messages: ModelMessage[];
   abortSignal?: AbortSignal;
   tools?: ToolSet;
   stopWhen?: StopCondition<ToolSet> | StopCondition<ToolSet>[];
@@ -109,7 +109,7 @@ export interface StreamAgentContext {
  * - external abort       → no further frames after the cancellation point.
  */
 export async function* streamAgent(
-  messages: ChatMessage[],
+  messages: ModelMessage[],
   ctx: StreamAgentContext,
 ): AsyncGenerator<AgentStreamEvent, void, void> {
   const log = ctx.logger;

@@ -1,15 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout, usePaste } from "ink";
-import type { ChatMessage, ModelsListResponse } from "@lordcode/shared";
+import type {
+  ModelMessage,
+  ModelsListResponse,
+  UserContent,
+  UserModelMessage,
+} from "@lordcode/shared";
 import type { ApiClient } from "../api/client.js";
 import {
-  buildAssistantSegment,
-  collapseMessageEntries,
-  upgradeToolEntry,
   type Entry,
-  type MessageEntry,
+  type SystemEntry,
   type ToolEntry,
 } from "../lib/chat-entries.js";
+import {
+  accumulate,
+  appendUserMessage,
+  dropPending,
+  initialAccumulatorState,
+  snapshotForRender,
+  type AccumulatorState,
+} from "../lib/history-accumulator.js";
+import { deriveEntriesWithBoundaries } from "../lib/derive-entries.js";
+import { repairOrphanToolCalls } from "../lib/repair-history.js";
 import { parseCommand } from "../lib/commands.js";
 import { tryParsePastedImage } from "../lib/clipboard-image.js";
 import type { PastedImage } from "../lib/clipboard-image.js";
@@ -62,6 +74,17 @@ interface StreamingState {
 }
 
 /**
+ * TUI-local note pinned to a position in the canonical history. Tracked
+ * separately from `ModelMessage[]` because system notes (errors, `/model`
+ * output, …) are UI chrome and must NOT be replayed on the wire.
+ */
+interface PinnedSystemNote {
+  /** Value of `accState.history.length` at the moment this note was pushed. */
+  afterHistoryLen: number;
+  entry: SystemEntry;
+}
+
+/**
  * Once the in-progress reasoning would render taller than this many wrapped
  * terminal rows, collapse it to a single "Thinking..." line so it stops
  * dominating the viewport while the model keeps thinking.
@@ -75,7 +98,13 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   // / callbacks can use them in dep arrays without resubscribing.
   const log = useMemo(() => baseLog.child("ui"), [baseLog]);
   const cmdLog = useMemo(() => baseLog.child("cmd"), [baseLog]);
-  const [entries, setEntries] = useState<Entry[]>([]);
+  // Canonical conversation state. `history` lives inside `accState` and is
+  // the SOURCE OF TRUTH for the wire payload. The UI's `entries` are derived
+  // by `deriveEntriesWithBoundaries` below.
+  const [accState, setAccState] = useState<AccumulatorState>(
+    initialAccumulatorState,
+  );
+  const [sideNotes, setSideNotes] = useState<PinnedSystemNote[]>([]);
   // Single-buffer input state. The cursor tracks character offsets into
   // `input.value`; all key/paste handlers go through the pure transitions in
   // `lib/input-buffer.ts` so the rules are testable without Ink in the loop.
@@ -103,26 +132,24 @@ export function App({ api, baseUrl, onExit }: AppProps) {
 
   const pushSystem = useCallback(
     (tone: "info" | "error", content: string) => {
-      setEntries((prev) => [...prev, { kind: "system", tone, content }]);
-    },
-    [],
-  );
-
-  const pushMessage = useCallback(
-    (msg: ChatMessage, opts?: { reasoningDurationMs?: number }) => {
-      setEntries((prev) => [
+      setSideNotes((prev) => [
         ...prev,
         {
-          kind: "msg",
-          ...msg,
-          ...(opts?.reasoningDurationMs != null
-            ? { reasoningDurationMs: opts.reasoningDurationMs }
-            : {}),
+          afterHistoryLen: accStateRef.current.history.length,
+          entry: { kind: "system", tone, content },
         },
       ]);
     },
     [],
   );
+
+  // Mirror accState into a ref so pushSystem can sample the current
+  // history length without depending on accState (which would invalidate
+  // every callback that uses pushSystem on every history update).
+  const accStateRef = useRef(accState);
+  useEffect(() => {
+    accStateRef.current = accState;
+  }, [accState]);
 
   const handleModels = useCallback(async () => {
     log.debug("/models requested");
@@ -170,27 +197,22 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     async (text: string) => {
       const pending = pendingImagesRef.current;
       const usedImageIds = consumedImageIds(text, pending);
-      const content = composeContent(text, pending);
+      const content: UserContent = composeContent(text, pending);
       // Drop the images we just baked into the outgoing turn so the next send
       // doesn't re-attach them. Images whose placeholder the user accidentally
       // deleted before sending stay in the ref — they may re-paste / re-type.
       for (const id of usedImageIds) pending.delete(id);
 
-      const userMsg: ChatMessage = { role: "user", content };
-      const baseEntries: Entry[] = [...entries, { kind: "msg", ...userMsg }];
-      // Strip UI-only fields (kind, reasoningDurationMs, tool entries) before
-      // sending; the server contract only carries role + content. Tool calls
-      // are NOT replayed across turns — the SDK handles per-turn agent loops
-      // internally and our wire format doesn't have a `tool` role yet.
-      //
-      // Because tool-interleaved turns are split across multiple assistant
-      // `MessageEntry`s in `entries` (so the UI can render text → tool →
-      // text in order), we collapse adjacent assistant-string entries back
-      // into a single assistant message for the wire payload.
-      const messages: ChatMessage[] = collapseMessageEntries(
-        baseEntries.filter((e): e is MessageEntry => e.kind === "msg"),
+      const userMsg: UserModelMessage = { role: "user", content };
+      const nextState = appendUserMessage(accStateRef.current, userMsg);
+      setAccState(nextState);
+
+      // Repair any orphan tool-calls from a prior interrupted turn before
+      // shipping; some providers reject unmatched `tool-call` parts. In the
+      // steady-state accumulator this is a no-op.
+      const messages: ModelMessage[] = repairOrphanToolCalls(
+        nextState.history,
       );
-      setEntries(baseEntries);
 
       const imageCount =
         typeof content === "string"
@@ -214,7 +236,9 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         reasoningDurationMs: null,
       });
 
-      let acc = "";
+      // Reasoning state lives outside accState — it's UI-only metadata
+      // intentionally not preserved on the wire (spec §3 decision #12).
+      let accText = "";
       let accReasoning = "";
       let reasoningStartedAt: number | null = null;
       let reasoningDurationMs: number | null = null;
@@ -232,7 +256,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       };
 
       const snapshot = (): StreamingState => ({
-        text: acc,
+        text: accText,
         reasoning: accReasoning,
         reasoningStartedAt,
         reasoningDurationMs,
@@ -240,16 +264,21 @@ export function App({ api, baseUrl, onExit }: AppProps) {
 
       try {
         for await (const ev of stream.events) {
+          // Feed every event into the accumulator — it knows which ones
+          // affect history and which are UI-only. The result lands in
+          // `accState.history` for the next turn's wire payload.
+          setAccState((s) => accumulate(s, ev));
+
           if (ev.type === "start") {
             receivedStart = true;
-            acc = "";
+            accText = "";
             accReasoning = "";
             reasoningStartedAt = null;
             reasoningDurationMs = null;
             log.debug("stream: start", { model: ev.model });
             setStreaming(snapshot());
           } else if (ev.type === "delta") {
-            acc += ev.text;
+            accText += ev.text;
             setStreaming(snapshot());
           } else if (ev.type === "reasoning-start") {
             // If a previous block somehow didn't get its end event, fold its
@@ -271,64 +300,17 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           } else if (ev.type === "reasoning-end") {
             closeReasoning();
             setStreaming(snapshot());
-          } else if (ev.type === "finish") {
-            closeReasoning();
-            const suffix = ev.aborted ? "\n[interrupted]" : "";
-            log.debug("stream: finish", {
-              len: acc.length,
-              ...(ev.finishReason ? { finishReason: ev.finishReason } : {}),
-              ...(reasoningDurationMs != null
-                ? { reasoningMs: reasoningDurationMs }
-                : {}),
-            });
-            // Flush the final segment ONLY if there's actual content to show
-            // (text, an [interrupted] marker, or measured reasoning). When a
-            // turn ends right after a tool-result with no follow-up text,
-            // the prior `tool-call` branch already flushed the last segment
-            // and there's nothing left to emit — pushing unconditionally
-            // here would leave a stray empty `ai · ` entry behind every
-            // tool-terminated turn.
-            const finalText = acc + suffix;
-            if (finalText.length > 0 || reasoningDurationMs != null) {
-              pushMessage(
-                { role: "assistant", content: finalText },
-                reasoningDurationMs != null
-                  ? { reasoningDurationMs }
-                  : undefined,
-              );
-            }
-            setStreaming(null);
-            return;
           } else if (ev.type === "tool-call") {
             log.debug("stream: tool-call", {
               toolCallId: ev.toolCallId,
               toolName: ev.toolName,
             });
-            // Flush whatever text/reasoning has accumulated SO FAR into its
-            // own assistant segment entry, THEN push the tool entry. Without
-            // this, the live streaming panel sits below the entries list, so
-            // tool calls visually pile up above the text the model said
-            // before invoking them — the wrong logical order. See
-            // `lib/chat-entries.ts` for the segment model.
-            closeReasoning();
-            const segment = buildAssistantSegment(acc, reasoningDurationMs);
-            const toolEntry: ToolEntry = {
-              kind: "tool",
-              toolCallId: ev.toolCallId,
-              toolName: ev.toolName,
-              input: ev.input,
-              phase: "call",
-            };
-            setEntries((prev) =>
-              segment != null
-                ? [...prev, segment, toolEntry]
-                : [...prev, toolEntry],
-            );
-            // Reset the live panel so the next text deltas accumulate fresh
-            // BELOW the tool entry in the viewport.
-            acc = "";
+            // Visually reset the streaming text panel so the NEXT delta starts
+            // below the tool call instead of stacking under the prior prose.
+            // The accumulator already folded the prior text into history.
+            accText = "";
             accReasoning = "";
-            reasoningStartedAt = null;
+            closeReasoning();
             reasoningDurationMs = null;
             setStreaming(snapshot());
           } else if (ev.type === "tool-result") {
@@ -336,38 +318,23 @@ export function App({ api, baseUrl, onExit }: AppProps) {
               toolCallId: ev.toolCallId,
               toolName: ev.toolName,
             });
-            // Upgrade the matching ToolEntry in-place. We rewrite by
-            // toolCallId; if no match (e.g. dropped tool-call), append.
-            setEntries((prev) => upgradeToolEntry(prev, ev.toolCallId, (e) => ({
-              ...e,
-              phase: "result",
-              output: ev.output,
-            }), {
-              kind: "tool",
-              toolCallId: ev.toolCallId,
-              toolName: ev.toolName,
-              input: undefined,
-              phase: "result",
-              output: ev.output,
-            }));
           } else if (ev.type === "tool-error") {
             log.warn("stream: tool-error", {
               toolCallId: ev.toolCallId,
               toolName: ev.toolName,
               message: ev.message,
             });
-            setEntries((prev) => upgradeToolEntry(prev, ev.toolCallId, (e) => ({
-              ...e,
-              phase: "error",
-              errorMessage: ev.message,
-            }), {
-              kind: "tool",
-              toolCallId: ev.toolCallId,
-              toolName: ev.toolName,
-              input: undefined,
-              phase: "error",
-              errorMessage: ev.message,
-            }));
+          } else if (ev.type === "finish") {
+            closeReasoning();
+            log.debug("stream: finish", {
+              len: accText.length,
+              ...(ev.finishReason ? { finishReason: ev.finishReason } : {}),
+              ...(reasoningDurationMs != null
+                ? { reasoningMs: reasoningDurationMs }
+                : {}),
+            });
+            setStreaming(null);
+            return;
           } else if (ev.type === "error") {
             errorMsg = ev.message;
             log.warn("stream: error frame", { message: ev.message });
@@ -382,33 +349,36 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       }
 
       closeReasoning();
-      const reasoningOpts =
-        reasoningDurationMs != null ? { reasoningDurationMs } : undefined;
 
       if (errorMsg != null) {
-        if (acc.length > 0) {
-          pushMessage(
-            { role: "assistant", content: `${acc}\n[interrupted]` },
-            reasoningOpts,
-          );
+        // The error frame already terminated the stream. Anything still in
+        // flight in the accumulator (e.g. a half-finished assistant text) is
+        // structurally invalid — drop it before exposing history to the next
+        // turn so we don't ship a partial message back to the provider.
+        setAccState((s) => dropPending(s));
+        if (accText.length > 0) {
+          // Surface the partial draft in the UI only (spec §3 decision #8 —
+          // never replay an unterminated assistant turn to the model).
+          pushSystem("info", `[interrupted draft] ${accText}`);
         }
         pushSystem("error", errorMsg);
         setStreaming(null);
         return;
       }
 
-      if (acc.length > 0) {
-        pushMessage(
-          { role: "assistant", content: `${acc}\n[interrupted]` },
-          reasoningOpts,
-        );
+      // Stream ended without `finish` (ESC abort or server hangup). Discard
+      // any in-flight content the accumulator may still hold — only fully
+      // flushed step boundaries should make it into the next turn.
+      setAccState((s) => dropPending(s));
+      if (accText.length > 0) {
+        pushSystem("info", `[interrupted draft] ${accText}`);
       } else if (!receivedStart) {
         log.warn("stream ended without any output");
         pushSystem("error", "stream ended without any output");
       }
       setStreaming(null);
     },
-    [api, entries, log, pushMessage, pushSystem],
+    [api, log, pushSystem],
   );
 
   usePaste((text) => {
@@ -507,6 +477,19 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     }
   });
 
+  // Derive UI entries from canonical history PLUS any in-flight pending
+  // content (so a tool-call rendered while its result is still streaming
+  // shows up immediately), then interleave the TUI-local system notes at the
+  // conversational positions they were pinned to.
+  const renderHistory = useMemo(
+    () => snapshotForRender(accState),
+    [accState],
+  );
+  const entries = useMemo<Entry[]>(
+    () => mergeEntries(renderHistory, sideNotes),
+    [renderHistory, sideNotes],
+  );
+
   const noModels = !modelsError && models != null && models.models.length === 0;
   const currentName = models?.current ?? null;
 
@@ -558,12 +541,14 @@ export function App({ api, baseUrl, onExit }: AppProps) {
                 durationMs={streaming.reasoningDurationMs}
               />
             ) : null}
-            <Box>
-              <Text color="yellow">ai </Text>
-              <Text> · </Text>
-              <Text>{streaming.text}</Text>
-              <Text color="gray">▌</Text>
-            </Box>
+            {streaming.text.length > 0 ? (
+              <Box>
+                <Text color="yellow">ai </Text>
+                <Text> · </Text>
+                <Text>{streaming.text}</Text>
+                <Text color="gray">▌</Text>
+              </Box>
+            ) : null}
           </Box>
         ) : null}
       </Box>
@@ -575,6 +560,44 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       />
     </Box>
   );
+}
+
+/**
+ * Merge entries derived from `history` with the chronologically-pinned
+ * `sideNotes`. Notes pinned at `afterHistoryLen === N` render AFTER all
+ * derived entries originating from `history[0..N-1]` and BEFORE any from
+ * `history[N..]`.
+ */
+function mergeEntries(
+  history: ModelMessage[],
+  sideNotes: PinnedSystemNote[],
+): Entry[] {
+  const { entries, entriesPerMessage } = deriveEntriesWithBoundaries(history);
+  if (sideNotes.length === 0) return entries;
+
+  // Group notes by their pin position for O(1) lookup per boundary.
+  const notesByPin = new Map<number, SystemEntry[]>();
+  for (const n of sideNotes) {
+    const list = notesByPin.get(n.afterHistoryLen);
+    if (list == null) notesByPin.set(n.afterHistoryLen, [n.entry]);
+    else list.push(n.entry);
+  }
+
+  const out: Entry[] = [];
+  let derivedCursor = 0;
+  for (let boundary = 0; boundary <= history.length; boundary++) {
+    const pinned = notesByPin.get(boundary);
+    if (pinned != null) {
+      for (const n of pinned) out.push(n);
+    }
+    if (boundary === history.length) break;
+    const count = entriesPerMessage[boundary] ?? 0;
+    for (let k = 0; k < count; k++) {
+      const e = entries[derivedCursor++];
+      if (e != null) out.push(e);
+    }
+  }
+  return out;
 }
 
 function EntryView({ entry }: { entry: Entry }) {

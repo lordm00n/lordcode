@@ -1,7 +1,49 @@
 /**
  * HTTP API contracts shared between server, TUI, and (future) web UI.
- * Keep this file dependency-free: pure types only.
+ *
+ * Wire format = Vercel AI SDK's `ModelMessage` (system / user / assistant /
+ * tool). Importing as `type` keeps shared free of any runtime dependency on
+ * the `ai` package — tsc emits the re-exports as pure type aliases.
  */
+
+import type {
+  AssistantContent,
+  AssistantModelMessage,
+  FilePart,
+  ImagePart,
+  ModelMessage,
+  SystemModelMessage,
+  TextPart,
+  ToolCallPart,
+  ToolContent,
+  ToolModelMessage,
+  ToolResultPart,
+  UserContent,
+  UserModelMessage,
+} from "ai";
+
+export type {
+  AssistantContent,
+  AssistantModelMessage,
+  FilePart,
+  ImagePart,
+  ModelMessage,
+  SystemModelMessage,
+  TextPart,
+  ToolCallPart,
+  ToolContent,
+  ToolModelMessage,
+  ToolResultPart,
+  UserContent,
+  UserModelMessage,
+};
+
+/**
+ * Output shape of a `tool-result` part. Re-exported from `ai` via the
+ * `ToolResultPart["output"]` field (the SDK's `ToolResultOutput` type itself
+ * is not surfaced from the top-level `ai` package barrel).
+ */
+export type ToolResultOutput = ToolResultPart["output"];
 
 export interface HealthResponse {
   status: "ok";
@@ -9,41 +51,28 @@ export interface HealthResponse {
   uptimeMs: number;
 }
 
-export type ChatRole = "user" | "assistant" | "system";
-
-export interface TextPart {
-  type: "text";
-  text: string;
-}
+/**
+ * Soft backward-compat alias. The wire format is now SDK-native — `ChatMessage`
+ * remains exported so existing callers (and any future external clients we add
+ * before the migration completes) compile unchanged.
+ */
+export type ChatMessage = ModelMessage;
 
 /**
- * Inline image content. `image` is a raw base64 string (no `data:` prefix)
- * and `mediaType` is the IANA type (e.g. `image/png`). Wire shape mirrors
- * Vercel AI SDK's `ImagePart` so the server can hand `messages` directly to
- * `streamText` without translation.
+ * Convenience alias mirroring the subset of {@link UserContent} parts that
+ * the TUI's paste flow actually emits today (text + inline base64 image).
+ * Keeps `composeContent` strongly typed without forcing it to widen to the
+ * full `UserContent` element union.
  */
-export interface ImagePart {
-  type: "image";
-  /** Raw base64-encoded image data, no `data:` prefix. */
-  image: string;
-  /** IANA media type — `image/png`, `image/jpeg`, etc. */
-  mediaType: string;
-}
-
 export type ContentPart = TextPart | ImagePart;
 
-export interface ChatMessage {
-  role: ChatRole;
-  /**
-   * Either a plain string (legacy text-only turns) or an ordered list of
-   * parts for multimodal turns. Single-modality user turns SHOULD remain a
-   * string to keep the wire format compact.
-   */
-  content: string | ContentPart[];
-}
-
 export interface AgentChatRequest {
-  messages: ChatMessage[];
+  /**
+   * Full conversation history this turn should be evaluated against. The
+   * client is the source of truth: server is stateless and feeds this array
+   * directly to `streamText({ messages })`.
+   */
+  messages: ModelMessage[];
 }
 
 /**

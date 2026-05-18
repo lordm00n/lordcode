@@ -90,6 +90,9 @@ importers:
 
   packages/shared:
     devDependencies:
+      ai:
+        specifier: ^6.0.176
+        version: 6.0.176(zod@4.4.3)
       typescript:
         specifier: ^5.6.3
         version: 5.9.3

@@ -53,6 +53,6 @@ For existing files: you MUST read_file first in this session. The tool verifies 
 
 For new files: no prior read is required. Parent directories are created automatically by default.
 
-Content is the complete file — this is NOT a patch/diff tool. For small edits to existing files, prefer edit_file (old_string → new_string) when available.
+Content is the complete file — this is NOT a patch/diff tool. For small edits to existing files.
 
 Content is capped at 1 MB. Encoding is always UTF-8.`;
