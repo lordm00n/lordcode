@@ -40,11 +40,11 @@ lordcode/
 │   ├── shared/   # @lordcode/shared - Shared types / API contracts
 │   ├── server/   # @lordcode/server - Hono HTTP server + agent
 │   ├── tui/      # @lordcode/tui - Ink TUI (project entry point)
-│   ├── web/      # @lordcode/web - [Reserved] Future web UI
+│   ├── web/      # @lordcode/web - [Reserved] Future web UI (placeholder)
 │   └── logger/   # @lordcode/logger - Logging utilities
 ├── .agents/      # Agent skills configuration
-├── docs/         # Documentation (PRD, specs)
-└── .cursor/      # Cursor IDE configuration
+├── docs/         # Documentation (specs)
+└── .cursor/      # Cursor IDE configuration (currently empty)
 ```
 
 ## Development Commands
@@ -88,16 +88,16 @@ pnpm clean
 
 Each package in `packages/` should:
 - Have its own `package.json` with proper exports
-- Include `build`, `typecheck`, `test`, `lint`, and `clean` scripts
+- Include `build`, `typecheck`, `test`, and `clean` scripts
 - Export types from `src/index.ts`
 - Keep implementation details private
 
 ### Naming Conventions
 
-- **Files**: kebab-case for file names (e.g., `api-client.ts`)
-- **Classes/Types**: PascalCase (e.g., `AgentConfig`, `ToolLoopAgent`)
-- **Functions/Variables**: camelCase (e.g., `createAgent`, `currentModel`)
-- **Constants**: UPPER_SNAKE_CASE (e.g., `DEFAULT_PORT`, `CONFIG_VERSION`)
+- **Files**: kebab-case for most file names (e.g., `api-client.ts`, `worker-protocol.ts`). Some React components and legacy files use PascalCase (e.g., `App.tsx`, `Input.tsx`) or camelCase (e.g., `apiKey.ts`).
+- **Classes/Types**: PascalCase (e.g., `StreamAgentContext`, `FullStreamChunk`)
+- **Functions/Variables**: camelCase (e.g., `streamAgent`, `resolveApiKey`)
+- **Constants**: UPPER_SNAKE_CASE (e.g., `API_ROUTES`, `AGENT_LOOP_MAX_STEPS`, `MAX_CONTENT_BYTES`)
 
 ## Configuration
 
@@ -137,13 +137,12 @@ When working with AI features in this project:
 
 1. **Use Vercel AI SDK** - The project uses `ai` package from Vercel AI SDK
 2. **Always verify APIs** - Search `node_modules/ai/docs/` and `node_modules/ai/src/` for current APIs
-3. **Use ToolLoopAgent pattern** - For creating agents
-4. **Type-safe agents** - Use `InferAgentUIMessage<typeof agent>` for type-safe tool results
-5. **Check Common Errors** - Before debugging type errors, check `.agents/skills/ai-sdk/references/common-errors.md`
+3. **Use `streamAgent` pattern** - The agent core uses `streamText` from the Vercel AI SDK wrapped in a `streamAgent` async generator in `packages/server/src/agent/stream.ts`
+4. **Check Common Errors** - Before debugging type errors, check `.agents/skills/ai-sdk/references/common-errors.md`
 
 ## Testing
 
-- Tests are run per-package using `pnpm test`
+- Tests are run per-package using `pnpm test` (powered by Vitest)
 - Follow the testing conventions established in each package
 - Ensure type checking passes before committing
 
@@ -161,7 +160,7 @@ When working with AI features in this project:
 The project uses an agent skills system located in `.agents/skills/`:
 
 - Skills are defined in `SKILL.md` files
-- Skills lock file: `skills-lock.json`
+- Skills lock file: `skills-lock.json` (root level)
 - Current skill: `ai-sdk` (Vercel AI SDK documentation and patterns)
 
 ## Best Practices for AI Assistants
