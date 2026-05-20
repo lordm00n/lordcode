@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { formatLine, formatRunHeader } from "./format.js";
 
-const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const UTC_PLUS_8_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00$/;
 
 describe("formatLine", () => {
   it("emits `[<iso>] <level5> [<channel>] <message>` for the simplest case", () => {
@@ -12,7 +13,7 @@ describe("formatLine", () => {
     });
     const m = line.match(/^\[([^\]]+)\] (.{5}) \[([^\]]+)\] (.*)$/);
     expect(m, line).not.toBeNull();
-    expect(m![1]).toMatch(ISO_RE);
+    expect(m![1]).toMatch(UTC_PLUS_8_RE);
     expect(m![2]).toBe("info "); // 5-char width with trailing space
     expect(m![3]).toBe("server:boot");
     expect(m![4]).toBe("hello");
@@ -123,7 +124,7 @@ describe("formatLine", () => {
 });
 
 describe("formatRunHeader", () => {
-  it("renders the canonical `=== run start <iso> mode=... pid=... version=... ===`", () => {
+  it("renders the canonical `=== run start <UTC+8 iso> mode=... pid=... version=... ===`", () => {
     const at = new Date("2026-05-09T13:10:00.123Z");
     const header = formatRunHeader({
       mode: "dev",
@@ -132,11 +133,11 @@ describe("formatRunHeader", () => {
       startedAt: at,
     });
     expect(header).toBe(
-      "=== run start 2026-05-09T13:10:00.123Z mode=dev pid=12345 version=0.0.0 ===",
+      "=== run start 2026-05-09T21:10:00.123+08:00 mode=dev pid=12345 version=0.0.0 ===",
     );
   });
 
-  it("defaults `startedAt` to `new Date()` (ISO-8601 with ms)", () => {
+  it("defaults `startedAt` to `new Date()` (UTC+8 ISO-8601 with ms)", () => {
     const header = formatRunHeader({
       mode: "release",
       pid: 1,
@@ -146,6 +147,6 @@ describe("formatRunHeader", () => {
       /^=== run start (\S+) mode=release pid=1 version=1\.2\.3 ===$/,
     );
     expect(m, header).not.toBeNull();
-    expect(m![1]).toMatch(ISO_RE);
+    expect(m![1]).toMatch(UTC_PLUS_8_RE);
   });
 });

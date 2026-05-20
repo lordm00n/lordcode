@@ -63,7 +63,7 @@
 | 13 | `close()` 语义 | 每个 logger 节点只 close 自己**新引入**的 transport（不递归到父） | session 结束 close 自己的 file，不能误关全局 `debug.log` |
 | 14 | 第三方库噪音 | 接管：`hono/logger` 输出转接到 `server:http` channel | 一处看全 |
 | 15 | 文件轮转 | **不做完整轮转**；启动时若 `debug.log > 50MB`，`mv` 成 `debug.log.old`（覆盖旧 `.old`）后开新 | 本地 dev 工具，磁盘可控；零依赖；后续真有需要再上 `pino-roll` |
-| 16 | 日志格式 | run header + `[ISO] level [channel] message [meta]` | human-readable 优先；行内 `meta` 用 `key=value`，便于 grep |
+| 16 | 日志格式 | run header + `[UTC+8 ISO] level [channel] message [meta]` | human-readable 优先；行内 `meta` 用 `key=value`，便于 grep |
 | 17 | session 文件位置 *(二期)* | `~/.lordcode/logs/sessions/<session-id>.log` | 与 `debug.log` 同根；目录路径常量一期就定 |
 | 18 | session 日志写入策略 *(二期)* | **双写**：同时进 `debug.log`（全局视图）和 `sessions/<id>.log`（单 session 视图） | `debug.log` 保留全局时序；session 文件聚焦单对话；以 `tee` 实现 |
 | 19 | session id 格式 *(二期)* | `<YYYYMMDDTHHmmss>-<short-random>`，例 `20260509T150300-a1b2` | 文件名直接看出时间；ULID/UUID 也可，但人眼识别差 |
@@ -148,14 +148,14 @@
 每次 lordcode 进程启动，**主线程**在打开 file transport 后写入一行：
 
 ```text
-=== run start 2026-05-09T13:10:00.123Z mode=dev pid=12345 version=0.0.0 ===
+=== run start 2026-05-09T21:10:00.123+08:00 mode=dev pid=12345 version=0.0.0 ===
 ```
 
 字段：
 
 | 字段 | 含义 | 取值 |
 | --- | --- | --- |
-| `<iso>`（无字段名前缀） | 进程启动时间，ISO-8601，毫秒精度 | `new Date().toISOString()` |
+| `<iso>`（无字段名前缀） | 进程启动时间，UTC+8 ISO-8601，毫秒精度 | 固定 `+08:00` offset |
 | `mode` | 见 §4 | `dev` 或 `release` |
 | `pid` | 主进程 pid | `process.pid` |
 | `version` | lordcode 版本 | 来自 `packages/server/src/version.ts` |
@@ -179,13 +179,13 @@
 示例：
 
 ```text
-[2026-05-09T13:10:00.456Z] info  [server:boot] server listening url=http://127.0.0.1:54321
-[2026-05-09T13:10:01.789Z] debug [server:agent:stream] chunk type=text-delta len=42
-[2026-05-09T13:10:02.111Z] error [server:route:agent] streamAgent failed err="model timeout"
+[2026-05-09T21:10:00.456+08:00] info  [server:boot] server listening url=http://127.0.0.1:54321
+[2026-05-09T21:10:01.789+08:00] debug [server:agent:stream] chunk type=text-delta len=42
+[2026-05-09T21:10:02.111+08:00] error [server:route:agent] streamAgent failed err="model timeout"
   Error: model timeout
       at streamText (...)
       at ...
-[2026-05-09T13:10:03.222Z] debug [tui:ui] user pressed enter input="hello"
+[2026-05-09T21:10:03.222+08:00] debug [tui:ui] user pressed enter input="hello"
 ```
 
 ### 6.3 行长与原子性

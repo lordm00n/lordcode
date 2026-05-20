@@ -71,6 +71,14 @@ const LEVEL_LABEL: Record<LogLevel | "warn" | "error", string> = {
 
 export type FormatLevel = "debug" | "info" | "warn" | "error";
 
+const UTC_PLUS_8_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function formatUtcPlus8Timestamp(date: Date): string {
+  return new Date(date.getTime() + UTC_PLUS_8_OFFSET_MS)
+    .toISOString()
+    .replace("Z", "+08:00");
+}
+
 /**
  * Format a single log line. Output never contains a trailing newline; the
  * transport adds it (so transports can choose their own line terminators if
@@ -93,7 +101,7 @@ export function formatLine(opts: {
   err?: unknown;
 }): string {
   const { level, channel, message, meta, err } = opts;
-  const ts = new Date().toISOString();
+  const ts = formatUtcPlus8Timestamp(new Date());
   const lvl = LEVEL_LABEL[level];
   const ch = channel.length > 0 ? ` [${channel.join(":")}]` : "";
   const msg = String(message ?? "").replace(/\n/g, " ");
@@ -136,6 +144,6 @@ export function formatRunHeader(opts: {
   /** Defaults to `now` — only injected for testing. */
   startedAt?: Date;
 }): string {
-  const ts = (opts.startedAt ?? new Date()).toISOString();
+  const ts = formatUtcPlus8Timestamp(opts.startedAt ?? new Date());
   return `=== run start ${ts} mode=${opts.mode} pid=${opts.pid} version=${opts.version} ===`;
 }

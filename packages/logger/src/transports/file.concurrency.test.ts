@@ -71,7 +71,7 @@ describe("fileTransport — concurrent appenders", () => {
 
     // Every line must match the spec §6.2 shape.
     const LINE_RE =
-      /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] info  \[[AB]\] [AB]-\d+ idx=\d+ tag=xxxxxxxx$/;
+      /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}\+08:00\] info  \[[AB]\] [AB]-\d+ idx=\d+ tag=xxxxxxxx$/;
     const bad = lines.filter((l) => !LINE_RE.test(l));
     expect(bad, bad.slice(0, 3).join("\n")).toEqual([]);
   });
