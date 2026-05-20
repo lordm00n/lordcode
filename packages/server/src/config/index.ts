@@ -9,8 +9,11 @@ export {
   getConfigDir,
   ensureConfigDir,
   getLogsDir,
+  getDataDir,
+  getSessionsDbPath,
   getDebugLogPath,
   getSessionsLogDir,
   ensureLogsDir,
+  ensureDataDir,
   rotateIfHuge,
 } from "./paths.js";

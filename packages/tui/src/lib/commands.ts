@@ -11,6 +11,9 @@ export type Command =
   | { kind: "send"; text: string }
   | { kind: "models" }
   | { kind: "set-model"; name: string }
+  | { kind: "sessions" }
+  | { kind: "new-session" }
+  | { kind: "rename-session"; title: string }
   | { kind: "invalid"; reason: string };
 
 export function parseCommand(input: string): Command {
@@ -29,6 +32,14 @@ export function parseCommand(input: string): Command {
     return { kind: "models" };
   }
 
+  if (head === "sessions") {
+    return { kind: "sessions" };
+  }
+
+  if (head === "new") {
+    return { kind: "new-session" };
+  }
+
   if (head === "model") {
     const after = rest.slice("model".length);
     const args = after.trim().split(/\s+/).filter((s) => s.length > 0);
@@ -40,6 +51,17 @@ export function parseCommand(input: string): Command {
       };
     }
     return { kind: "set-model", name };
+  }
+
+  if (head === "rename") {
+    const title = rest.slice("rename".length).trim();
+    if (!title) {
+      return {
+        kind: "invalid",
+        reason: "usage: /rename <title>",
+      };
+    }
+    return { kind: "rename-session", title };
   }
 
   return { kind: "invalid", reason: `unknown command: /${head}` };

@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput, useStdout, usePaste } from "ink";
 import type {
   ModelMessage,
   ModelsListResponse,
+  SessionSummary,
   UserContent,
   UserModelMessage,
 } from "@lordcode/shared";
@@ -40,6 +41,15 @@ import {
   applyLiveToolInputEvent,
   type LiveToolInput,
 } from "../lib/live-tool-inputs.js";
+import {
+  activateSelectedSession,
+  closeSessionPicker,
+  deleteSelectedSession,
+  moveSessionPickerSelection,
+  openSessionPicker,
+  selectedSessionDetails,
+  type SessionPickerState,
+} from "../lib/session-picker.js";
 import {
   deleteAt,
   deleteBefore,
@@ -118,6 +128,9 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   const [models, setModels] = useState<ModelsListResponse | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState<StreamingState | null>(null);
+  const [sessionPicker, setSessionPicker] = useState<SessionPickerState | null>(
+    null,
+  );
   const abortRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -187,6 +200,103 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         pushSystem(
           "error",
           err instanceof Error ? err.message : String(err),
+        );
+      }
+    },
+    [api, log, pushSystem],
+  );
+
+  const handleSessions = useCallback(async () => {
+    log.debug("/sessions requested");
+    try {
+      const res = await api.listSessions();
+      setSessionPicker(openSessionPicker(res.sessions));
+    } catch (err) {
+      log.error("/sessions failed", err);
+      pushSystem(
+        "error",
+        `failed to list sessions: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, [api, log, pushSystem]);
+
+  const handleNewSession = useCallback(async () => {
+    log.info("/new requested");
+    try {
+      const res = await api.createSession();
+      setAccState({ ...initialAccumulatorState, history: res.history });
+      setSideNotes([
+        {
+          afterHistoryLen: res.history.length,
+          entry: { kind: "system", tone: "info", content: "Started new session" },
+        },
+      ]);
+      setSessionPicker(null);
+    } catch (err) {
+      log.error("/new failed", err);
+      pushSystem(
+        "error",
+        `failed to create session: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }, [api, log, pushSystem]);
+
+  const handleRenameSession = useCallback(
+    async (title: string) => {
+      log.info("/rename requested");
+      try {
+        await api.renameSession(title);
+        pushSystem("info", `Renamed session: ${title}`);
+      } catch (err) {
+        log.error("/rename failed", err);
+        pushSystem(
+          "error",
+          `failed to rename session: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    [api, log, pushSystem],
+  );
+
+  const handleActivateSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        const res = await api.activateSession(sessionId);
+        setAccState({ ...initialAccumulatorState, history: res.history });
+        setSideNotes([
+          {
+            afterHistoryLen: res.history.length,
+            entry: {
+              kind: "system",
+              tone: "info",
+              content: `Resumed session: ${res.session.title ?? "Untitled session"}`,
+            },
+          },
+        ]);
+        setSessionPicker(null);
+      } catch (err) {
+        log.error("session activation failed", err);
+        pushSystem(
+          "error",
+          `failed to resume session: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    [api, log, pushSystem],
+  );
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: string) => {
+      try {
+        await api.deleteSession(sessionId);
+        const res = await api.listSessions();
+        setSessionPicker(openSessionPicker(res.sessions));
+        pushSystem("info", `Deleted session: ${sessionId}`);
+      } catch (err) {
+        log.error("session deletion failed", err);
+        pushSystem(
+          "error",
+          `failed to delete session: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     },
@@ -443,6 +553,41 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       return;
     }
 
+    if (sessionPicker != null) {
+      if (key.escape) {
+        setSessionPicker(closeSessionPicker(sessionPicker));
+        return;
+      }
+      if (key.upArrow) {
+        setSessionPicker((prev) =>
+          prev == null ? prev : moveSessionPickerSelection(prev, -1),
+        );
+        return;
+      }
+      if (key.downArrow) {
+        setSessionPicker((prev) =>
+          prev == null ? prev : moveSessionPickerSelection(prev, 1),
+        );
+        return;
+      }
+      if (key.return) {
+        const action = activateSelectedSession(sessionPicker, streaming != null);
+        if (action.kind === "refuse") {
+          pushSystem("error", action.reason);
+        } else if (action.kind === "activate") {
+          void handleActivateSession(action.sessionId);
+        }
+        return;
+      }
+      if (char === "d" && !key.ctrl && !key.meta) {
+        const action = deleteSelectedSession(sessionPicker);
+        if (action.kind === "delete") {
+          void handleDeleteSession(action.sessionId);
+        }
+        return;
+      }
+    }
+
     if (key.return) {
       const trimmed = input.value.trim();
       if (!trimmed) return;
@@ -457,6 +602,15 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           break;
         case "set-model":
           void handleSetModel(cmd.name);
+          break;
+        case "sessions":
+          void handleSessions();
+          break;
+        case "new-session":
+          void handleNewSession();
+          break;
+        case "rename-session":
+          void handleRenameSession(cmd.title);
           break;
         case "invalid":
           cmdLog.warn("invalid command", { reason: cmd.reason });
@@ -548,9 +702,12 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       )}
 
       <Box flexDirection="column" marginBottom={1}>
+        {sessionPicker != null ? (
+          <SessionPickerView state={sessionPicker} />
+        ) : null}
         {entries.length === 0 && streaming == null ? (
           <Text dimColor>
-            type something and press enter · /models · /model &lt;name&gt; · esc to cancel · ctrl+c to exit
+            type something and press enter · /sessions · /new · /rename &lt;title&gt; · /models · esc to cancel · ctrl+c to exit
           </Text>
         ) : (
           entries.map((e, i) => <EntryView key={i} entry={e} />)
@@ -595,6 +752,54 @@ function LiveToolInputView({ input }: { input: LiveToolInput }) {
     <Box>
       <Text color="cyan" dimColor>
         → {formatLiveToolInput(input)}
+      </Text>
+    </Box>
+  );
+}
+
+function SessionPickerView({ state }: { state: SessionPickerState }) {
+  const details = selectedSessionDetails(state);
+  return (
+    <Box flexDirection="column" marginBottom={1}>
+      <Text color="cyan" bold>
+        Sessions
+      </Text>
+      {state.sessions.length === 0 ? (
+        <Text dimColor>No sessions for this project</Text>
+      ) : (
+        state.sessions.map((session, index) => (
+          <SessionPickerRow
+            key={session.id}
+            session={session}
+            selected={index === state.selectedIndex}
+          />
+        ))
+      )}
+      {details != null ? (
+        <Text dimColor>
+          selected id {details.id.split("_")[1]}
+        </Text>
+      ) : null}
+      <Text dimColor>Up/Down select · Enter resume · d delete · Esc close</Text>
+    </Box>
+  );
+}
+
+function SessionPickerRow({
+  session,
+  selected,
+}: {
+  session: SessionSummary;
+  selected: boolean;
+}) {
+  return (
+    <Box>
+      <Text color={selected ? "cyan" : undefined}>{selected ? "> " : "  "}</Text>
+      <Text>{session.title ?? "Untitled session"}</Text>
+      <Text dimColor>
+        {" "}
+        · {session.messageCount} messages
+        {session.model ? ` · ${session.model}` : ""}
       </Text>
     </Box>
   );

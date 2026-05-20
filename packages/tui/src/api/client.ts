@@ -5,8 +5,14 @@ import {
   API_ROUTES,
   type AgentChatRequest,
   type AgentStreamEvent,
+  type ActivateSessionRequest,
+  type CreateSessionResponse,
+  type DeleteSessionResponse,
   type HealthResponse,
+  type ListSessionsResponse,
   type ModelsListResponse,
+  type RenameSessionRequest,
+  type SessionSummary,
   type SetCurrentModelRequest,
   type SetCurrentModelResponse,
 } from "@lordcode/shared";
@@ -22,6 +28,11 @@ export interface ApiClient {
   health(): Promise<HealthResponse>;
   listModels(): Promise<ModelsListResponse>;
   setCurrentModel(name: string): Promise<SetCurrentModelResponse>;
+  listSessions(): Promise<ListSessionsResponse>;
+  createSession(): Promise<CreateSessionResponse>;
+  activateSession(sessionId: string): Promise<CreateSessionResponse>;
+  renameSession(title: string): Promise<SessionSummary>;
+  deleteSession(sessionId: string): Promise<DeleteSessionResponse>;
   chat(req: AgentChatRequest): ChatStream;
 }
 
@@ -84,6 +95,35 @@ export function createApiClient(baseUrl: string, logger?: Logger): ApiClient {
         body: JSON.stringify(body),
       });
     },
+
+    listSessions: () => json<ListSessionsResponse>(API_ROUTES.sessions),
+
+    createSession: () =>
+      json<CreateSessionResponse>(API_ROUTES.sessions, {
+        method: "POST",
+      }),
+
+    activateSession: (sessionId) => {
+      const body: ActivateSessionRequest = { sessionId };
+      return json<CreateSessionResponse>(API_ROUTES.activeSession, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+
+    renameSession: (title) => {
+      const body: RenameSessionRequest = { title };
+      return json<SessionSummary>(API_ROUTES.renameCurrentSession, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+
+    deleteSession: (sessionId) =>
+      json<DeleteSessionResponse>(
+        `${API_ROUTES.sessions}/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE" },
+      ),
 
     chat: (req) => openChatStream(baseUrl, req, log),
   };

@@ -23,6 +23,14 @@ export function getLogsDir(home: string = resolveHome()): string {
   return join(home, ".lordcode", "logs");
 }
 
+export function getDataDir(home: string = resolveHome()): string {
+  return join(home, ".lordcode", "data");
+}
+
+export function getSessionsDbPath(home: string = resolveHome()): string {
+  return join(getDataDir(home), "sessions.sqlite");
+}
+
 /**
  * Default debug-log path. Honors `LORDCODE_DEBUG_LOG` as an absolute override,
  * matching spec §11. The override wins over both `home` and the default name
@@ -62,6 +70,10 @@ export async function ensureConfigDir(home?: string): Promise<string> {
  */
 export async function ensureLogsDir(home?: string): Promise<string> {
   return ensureDir(getLogsDir(home));
+}
+
+export async function ensureDataDir(home?: string): Promise<string> {
+  return ensureDir(getDataDir(home));
 }
 
 async function ensureDir(dir: string): Promise<string> {

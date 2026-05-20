@@ -4,6 +4,7 @@ import type { Logger } from "@lordcode/logger";
 import { createApp } from "./app.js";
 import { VERSION } from "./version.js";
 import { ConfigStore } from "./config/store.js";
+import { SessionRuntime } from "./session/runtime.js";
 
 export interface StartServerOptions {
   port?: number;
@@ -40,12 +41,19 @@ export async function startServer(
     ...(opts.home ? { home: opts.home } : {}),
     logger,
   });
+  const sessionRuntime = await SessionRuntime.open({
+    ...(opts.home ? { home: opts.home } : {}),
+    projectPath: process.cwd(),
+    model: configStore.getCurrentName(),
+    logger,
+  });
 
   const app = createApp({
     logger,
     startedAt,
     version: VERSION,
     configStore,
+    sessionRuntime,
   });
 
   const server = serve({ fetch: app.fetch, port, hostname: host });
@@ -78,6 +86,8 @@ export async function startServer(
             resolve();
           }
         });
+      }).finally(async () => {
+        await sessionRuntime.close();
       }),
   };
 }

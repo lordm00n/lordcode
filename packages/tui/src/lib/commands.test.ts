@@ -78,4 +78,24 @@ describe("parseCommand", () => {
       text: "hello /models",
     });
   });
+
+  it('[UT-14] "/new" → new-session', () => {
+    expect(parseCommand("/new")).toEqual({ kind: "new-session" });
+  });
+
+  it('[UT-15] "/rename Project work" → rename-session', () => {
+    expect(parseCommand("/rename Project work")).toEqual({
+      kind: "rename-session",
+      title: "Project work",
+    });
+  });
+
+  it('[UT-15] "/rename" → invalid (missing title)', () => {
+    const r = parseCommand("/rename");
+    expect(r.kind).toBe("invalid");
+  });
+
+  it('[UT-10] "/sessions" → sessions', () => {
+    expect(parseCommand("/sessions")).toEqual({ kind: "sessions" });
+  });
 });

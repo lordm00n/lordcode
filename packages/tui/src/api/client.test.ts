@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiClient } from "./client.js";
-import type { AgentStreamEvent, ModelsListResponse } from "@lordcode/shared";
+import type {
+  AgentStreamEvent,
+  CreateSessionResponse,
+  ListSessionsResponse,
+  ModelsListResponse,
+} from "@lordcode/shared";
 
 const baseUrl = "http://test.local";
 const encoder = new TextEncoder();
@@ -248,6 +253,132 @@ describe("createApiClient.listModels / setCurrentModel", () => {
     const api = createApiClient(baseUrl);
     await expect(api.setCurrentModel("claude")).rejects.toThrow(
       /no such model: claude/,
+    );
+  });
+});
+
+describe("createApiClient session methods", () => {
+  it("[session] listSessions returns current project sessions", async () => {
+    const body: ListSessionsResponse = {
+      sessions: [
+        {
+          id: "ses_1",
+          title: "Work",
+          titleSource: "auto",
+          projectPath: "/tmp/project",
+          updatedAt: 1,
+          messageCount: 2,
+          model: "gpt-4o",
+        },
+      ],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })),
+    );
+
+    const api = createApiClient(baseUrl);
+
+    expect(await api.listSessions()).toEqual(body);
+  });
+
+  it("[session] createSession posts to /sessions", async () => {
+    const body: CreateSessionResponse = {
+      session: {
+        id: "ses_1",
+        title: null,
+        titleSource: "none",
+        projectPath: "/tmp/project",
+        updatedAt: 1,
+        messageCount: 0,
+        model: null,
+      },
+      history: [],
+    };
+    const fetchStub = vi.fn(
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const api = createApiClient(baseUrl);
+
+    expect(await api.createSession()).toEqual(body);
+    expect(fetchStub).toHaveBeenCalledWith(
+      `${baseUrl}/sessions`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("[session] activateSession posts the selected id", async () => {
+    const body: CreateSessionResponse = {
+      session: {
+        id: "ses_2",
+        title: "Resume",
+        titleSource: "user",
+        projectPath: "/tmp/project",
+        updatedAt: 2,
+        messageCount: 1,
+        model: "gpt-4o",
+      },
+      history: [{ role: "user", content: "hello" }],
+    };
+    const fetchStub = vi.fn(
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const api = createApiClient(baseUrl);
+
+    expect(await api.activateSession("ses_2")).toEqual(body);
+    expect(fetchStub).toHaveBeenCalledWith(
+      `${baseUrl}/sessions/active`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ sessionId: "ses_2" }),
+      }),
+    );
+  });
+
+  it("[session] renameSession posts the new title", async () => {
+    const body: CreateSessionResponse["session"] = {
+      id: "ses_1",
+      title: "Renamed",
+      titleSource: "user",
+      projectPath: "/tmp/project",
+      updatedAt: 3,
+      messageCount: 0,
+      model: null,
+    };
+    const fetchStub = vi.fn(
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const api = createApiClient(baseUrl);
+
+    expect(await api.renameSession("Renamed")).toEqual(body);
+    expect(fetchStub).toHaveBeenCalledWith(
+      `${baseUrl}/sessions/current/rename`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ title: "Renamed" }),
+      }),
+    );
+  });
+
+  it("[session] deleteSession sends DELETE for the selected id", async () => {
+    const body = { deletedSessionId: "ses_2" };
+    const fetchStub = vi.fn(
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchStub);
+
+    const api = createApiClient(baseUrl);
+
+    expect(await api.deleteSession("ses_2")).toEqual(body);
+    expect(fetchStub).toHaveBeenCalledWith(
+      `${baseUrl}/sessions/ses_2`,
+      expect.objectContaining({ method: "DELETE" }),
     );
   });
 });

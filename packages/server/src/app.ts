@@ -5,7 +5,9 @@ import type { Logger } from "@lordcode/logger";
 import { healthRoute } from "./routes/health.js";
 import { agentRoute } from "./routes/agent.js";
 import { modelsRoute } from "./routes/models.js";
+import { sessionsRoute } from "./routes/sessions.js";
 import type { ConfigStore } from "./config/store.js";
+import type { SessionRuntime } from "./session/runtime.js";
 
 export interface AppDeps {
   /**
@@ -21,6 +23,7 @@ export interface AppDeps {
   startedAt: number;
   version: string;
   configStore: ConfigStore;
+  sessionRuntime: SessionRuntime;
 }
 
 export function createApp(deps: AppDeps) {
@@ -45,6 +48,7 @@ export function createApp(deps: AppDeps) {
   app.route("/health", healthRoute(deps));
   app.route("/agent", agentRoute(deps));
   app.route("/models", modelsRoute(deps));
+  app.route("/sessions", sessionsRoute(deps));
 
   app.notFound((c) => c.json({ error: "Not Found" }, 404));
   app.onError((err, c) => {

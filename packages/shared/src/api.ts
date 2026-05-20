@@ -75,6 +75,39 @@ export interface AgentChatRequest {
   messages: ModelMessage[];
 }
 
+export type SessionTitleSource = "none" | "auto" | "user";
+
+export interface SessionSummary {
+  id: string;
+  title: string | null;
+  titleSource: SessionTitleSource;
+  projectPath: string;
+  updatedAt: number;
+  messageCount: number;
+  model: string | null;
+}
+
+export interface ListSessionsResponse {
+  sessions: SessionSummary[];
+}
+
+export interface CreateSessionResponse {
+  session: SessionSummary;
+  history: ModelMessage[];
+}
+
+export interface ActivateSessionRequest {
+  sessionId: string;
+}
+
+export interface RenameSessionRequest {
+  title: string;
+}
+
+export interface DeleteSessionResponse {
+  deletedSessionId: string;
+}
+
 /**
  * One frame on the SSE stream emitted by `POST /agent/chat`.
  * Carried as a single `data:` field whose body is `JSON.stringify(AgentStreamEvent)`.
@@ -138,6 +171,9 @@ export const API_ROUTES = {
   agentChat: "/agent/chat",
   models: "/models",
   currentModel: "/models/current",
+  sessions: "/sessions",
+  activeSession: "/sessions/active",
+  renameCurrentSession: "/sessions/current/rename",
 } as const;
 
 export type ApiRoute = (typeof API_ROUTES)[keyof typeof API_ROUTES];
