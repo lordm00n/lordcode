@@ -23,7 +23,20 @@ import {
 } from "../lib/history-accumulator.js";
 import { deriveEntriesWithBoundaries } from "../lib/derive-entries.js";
 import { repairOrphanToolCalls } from "../lib/repair-history.js";
-import { parseCommand } from "../lib/commands.js";
+import {
+  COMMAND_DEFINITIONS,
+  parseCommand,
+  type SlashCommandDefinition,
+} from "../lib/commands.js";
+import {
+  activateSelectedCommand,
+  closeCommandPalette,
+  COMMAND_PALETTE_MAX_ROWS,
+  filterCommandPalette,
+  moveCommandPaletteSelection,
+  openCommandPalette,
+  type CommandPaletteState,
+} from "../lib/command-palette.js";
 import { tryParsePastedImage } from "../lib/clipboard-image.js";
 import type { PastedImage } from "../lib/clipboard-image.js";
 import {
@@ -109,6 +122,7 @@ const REASONING_COLLAPSE_LINES = 8;
 
 export function App({ api, baseUrl, onExit }: AppProps) {
   const ink = useApp();
+  const { stdout } = useStdout();
   const baseLog = useLogger();
   // Stable child loggers — avoid re-deriving on every render so that effects
   // / callbacks can use them in dep arrays without resubscribing.
@@ -131,7 +145,14 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   const [sessionPicker, setSessionPicker] = useState<SessionPickerState | null>(
     null,
   );
+  const [commandPalette, setCommandPalette] =
+    useState<CommandPaletteState | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
+  const skillCommands = useMemo<SlashCommandDefinition[]>(() => [], []);
+  const allCommands = useMemo<readonly SlashCommandDefinition[]>(
+    () => [...COMMAND_DEFINITIONS, ...skillCommands],
+    [skillCommands],
+  );
 
   useEffect(() => {
     void (async () => {
@@ -516,6 +537,49 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     [api, log, pushSystem],
   );
 
+  const executeSubmittedInput = useCallback(
+    (submittedInput: string) => {
+      const trimmed = submittedInput.trim();
+      if (!trimmed) return;
+      const cmd = parseCommand(trimmed);
+      setInput(EMPTY_INPUT);
+      switch (cmd.kind) {
+        case "send":
+          void handleSend(cmd.text);
+          break;
+        case "models":
+          void handleModels();
+          break;
+        case "set-model":
+          void handleSetModel(cmd.name);
+          break;
+        case "sessions":
+          void handleSessions();
+          break;
+        case "new-session":
+          void handleNewSession();
+          break;
+        case "rename-session":
+          void handleRenameSession(cmd.title);
+          break;
+        case "invalid":
+          cmdLog.warn("invalid command", { reason: cmd.reason });
+          pushSystem("error", cmd.reason);
+          break;
+      }
+    },
+    [
+      cmdLog,
+      handleModels,
+      handleNewSession,
+      handleRenameSession,
+      handleSend,
+      handleSessions,
+      handleSetModel,
+      pushSystem,
+    ],
+  );
+
   usePaste((text) => {
     void (async () => {
       const img = await tryParsePastedImage(text, { fallbackToClipboard: true });
@@ -535,6 +599,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       setInput((prev) => insert(prev, `[image:${img.mimeType}#${id}]`));
     })();
   });
+
+  useEffect(() => {
+    setCommandPalette((prev) =>
+      prev == null
+        ? prev
+        : !input.value.startsWith("/")
+          ? null
+        : filterCommandPalette({ ...prev, allCommands }, input.value),
+    );
+  }, [allCommands, input.value]);
 
   useInput((char, key) => {
     if (key.ctrl && (char === "c" || char === "d")) {
@@ -588,35 +662,63 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       }
     }
 
-    if (key.return) {
-      const trimmed = input.value.trim();
-      if (!trimmed) return;
-      const cmd = parseCommand(trimmed);
-      setInput(EMPTY_INPUT);
-      switch (cmd.kind) {
-        case "send":
-          void handleSend(cmd.text);
-          break;
-        case "models":
-          void handleModels();
-          break;
-        case "set-model":
-          void handleSetModel(cmd.name);
-          break;
-        case "sessions":
-          void handleSessions();
-          break;
-        case "new-session":
-          void handleNewSession();
-          break;
-        case "rename-session":
-          void handleRenameSession(cmd.title);
-          break;
-        case "invalid":
-          cmdLog.warn("invalid command", { reason: cmd.reason });
-          pushSystem("error", cmd.reason);
-          break;
+    if (commandPalette != null) {
+      if (key.escape) {
+        cmdLog.debug("command palette closed");
+        setCommandPalette(closeCommandPalette(commandPalette));
+        return;
       }
+      if (key.upArrow) {
+        setCommandPalette((prev) =>
+          prev == null ? prev : moveCommandPaletteSelection(prev, -1),
+        );
+        return;
+      }
+      if (key.downArrow) {
+        setCommandPalette((prev) =>
+          prev == null ? prev : moveCommandPaletteSelection(prev, 1),
+        );
+        return;
+      }
+      if (key.return) {
+        const action = activateSelectedCommand(commandPalette);
+        setCommandPalette(null);
+        if (action.kind === "execute") {
+          cmdLog.debug("command palette execute", { input: action.input });
+          executeSubmittedInput(action.input);
+        } else if (action.kind === "complete-input") {
+          cmdLog.debug("command palette complete", { input: action.input });
+          setInput({ value: action.input, cursor: action.input.length });
+        } else {
+          cmdLog.warn("command palette activation without selection");
+          executeSubmittedInput(input.value);
+        }
+        return;
+      }
+      if (key.leftArrow) {
+        setInput((prev) => (key.meta ? moveWordLeft(prev) : moveLeft(prev)));
+        return;
+      }
+      if (key.rightArrow) {
+        setInput((prev) => (key.meta ? moveWordRight(prev) : moveRight(prev)));
+        return;
+      }
+      if (key.backspace) {
+        setInput((prev) => deleteBefore(prev));
+        return;
+      }
+      if (key.delete) {
+        setInput((prev) => deleteAt(prev));
+        return;
+      }
+      if (char && !key.ctrl && !key.meta) {
+        setInput((prev) => insert(prev, char));
+      }
+      return;
+    }
+
+    if (key.return) {
+      executeSubmittedInput(input.value);
       return;
     }
 
@@ -652,7 +754,14 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     }
 
     if (char && !key.ctrl && !key.meta) {
-      setInput((prev) => insert(prev, char));
+      const next = insert(input, char);
+      if (next.value.startsWith("/") && !input.value.startsWith("/")) {
+        cmdLog.debug("command palette opened");
+        setInput(next);
+        setCommandPalette(openCommandPalette(next.value, allCommands));
+        return;
+      }
+      setInput(next);
     }
   });
 
@@ -672,8 +781,16 @@ export function App({ api, baseUrl, onExit }: AppProps) {
   const noModels = !modelsError && models != null && models.models.length === 0;
   const currentName = models?.current ?? null;
 
+  const terminalRows = stdout?.rows ?? 24;
+  const terminalColumns = stdout?.columns ?? 80;
+
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box
+      flexDirection="column"
+      padding={1}
+      minHeight={terminalRows}
+      width={terminalColumns}
+    >
       <Box marginBottom={1}>
         <Text color="cyan" bold>
           lordcode
@@ -743,6 +860,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         cursor={input.cursor}
         isStreaming={streaming != null}
       />
+      <CommandPaletteOverlay state={commandPalette} />
     </Box>
   );
 }
@@ -801,6 +919,86 @@ function SessionPickerRow({
         · {session.messageCount} messages
         {session.model ? ` · ${session.model}` : ""}
       </Text>
+    </Box>
+  );
+}
+
+function CommandPaletteOverlay({
+  state,
+}: {
+  state: CommandPaletteState | null;
+}) {
+  const { stdout } = useStdout();
+  if (state == null) return null;
+
+  const columns = stdout?.columns ?? 80;
+  const rows = stdout?.rows ?? 24;
+  const panelWidth = Math.max(36, Math.min(72, columns - 4));
+  const firstVisibleIndex =
+    state.selectedIndex >= COMMAND_PALETTE_MAX_ROWS
+      ? state.selectedIndex - COMMAND_PALETTE_MAX_ROWS + 1
+      : 0;
+  const visibleCommands = state.visibleCommands.slice(
+    firstVisibleIndex,
+    firstVisibleIndex + COMMAND_PALETTE_MAX_ROWS,
+  );
+
+  return (
+    <Box
+      position="absolute"
+      left={0}
+      top={0}
+      width={columns}
+      height={rows}
+      alignItems="center"
+      justifyContent="center"
+    >
+      <Box
+        flexDirection="column"
+        width={panelWidth}
+        borderStyle="round"
+        borderColor="gray"
+        paddingX={1}
+      >
+        <Box justifyContent="space-between">
+          <Text color="cyan" bold>
+            Commands
+          </Text>
+          <Text dimColor>/{state.query}</Text>
+        </Box>
+        {visibleCommands.length === 0 ? (
+          <Text dimColor>
+            {state.allCommands.length === 0
+              ? "No commands"
+              : "No matching commands"}
+          </Text>
+        ) : (
+          visibleCommands.map((command, index) => (
+            <CommandPaletteRow
+              key={`${command.source}:${command.name}`}
+              command={command}
+              selected={firstVisibleIndex + index === state.selectedIndex}
+            />
+          ))
+        )}
+        <Text dimColor>Up/Down select · Enter · Esc</Text>
+      </Box>
+    </Box>
+  );
+}
+
+function CommandPaletteRow({
+  command,
+  selected,
+}: {
+  command: SlashCommandDefinition;
+  selected: boolean;
+}) {
+  return (
+    <Box>
+      <Text color={selected ? "cyan" : undefined}>{selected ? "> " : "  "}</Text>
+      <Text color={selected ? "cyan" : undefined}>{command.usage}</Text>
+      <Text dimColor> · {command.description}</Text>
     </Box>
   );
 }

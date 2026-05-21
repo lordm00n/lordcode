@@ -16,6 +16,60 @@ export type Command =
   | { kind: "rename-session"; title: string }
   | { kind: "invalid"; reason: string };
 
+export type SlashCommandSource = "builtin" | "skill";
+
+export interface SlashCommandDefinition {
+  name: string;
+  usage: string;
+  description: string;
+  source: SlashCommandSource;
+  completion: "execute" | "insert-template";
+  template: string;
+}
+
+export const COMMAND_DEFINITIONS = [
+  {
+    name: "models",
+    usage: "/models",
+    description: "List configured models.",
+    source: "builtin",
+    completion: "execute",
+    template: "/models",
+  },
+  {
+    name: "model",
+    usage: "/model <name>",
+    description: "Switch current model.",
+    source: "builtin",
+    completion: "insert-template",
+    template: "/model ",
+  },
+  {
+    name: "sessions",
+    usage: "/sessions",
+    description: "Show sessions for the current project.",
+    source: "builtin",
+    completion: "execute",
+    template: "/sessions",
+  },
+  {
+    name: "new",
+    usage: "/new",
+    description: "Start a new session.",
+    source: "builtin",
+    completion: "execute",
+    template: "/new",
+  },
+  {
+    name: "rename",
+    usage: "/rename <title>",
+    description: "Rename the current session.",
+    source: "builtin",
+    completion: "insert-template",
+    template: "/rename ",
+  },
+] as const satisfies readonly SlashCommandDefinition[];
+
 export function parseCommand(input: string): Command {
   if (!input.startsWith("/")) {
     return { kind: "send", text: input };

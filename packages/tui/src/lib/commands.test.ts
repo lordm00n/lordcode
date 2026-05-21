@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { parseCommand } from "./commands.js";
+import { COMMAND_DEFINITIONS, parseCommand } from "./commands.js";
+
+describe("COMMAND_DEFINITIONS", () => {
+  it("[UT-1] includes every built-in slash command", () => {
+    expect(COMMAND_DEFINITIONS.map((command) => command.usage)).toEqual([
+      "/models",
+      "/model <name>",
+      "/sessions",
+      "/new",
+      "/rename <title>",
+    ]);
+  });
+});
 
 describe("parseCommand", () => {
   // C1.1
@@ -28,7 +40,7 @@ describe("parseCommand", () => {
   // C1.5
   it('[C1.5] "/model" → invalid (missing name)', () => {
     const r = parseCommand("/model");
-    expect(r.kind).toBe("invalid");
+    expect(r).toEqual({ kind: "invalid", reason: "usage: /model <name>" });
   });
 
   // C1.6
@@ -92,7 +104,7 @@ describe("parseCommand", () => {
 
   it('[UT-15] "/rename" → invalid (missing title)', () => {
     const r = parseCommand("/rename");
-    expect(r.kind).toBe("invalid");
+    expect(r).toEqual({ kind: "invalid", reason: "usage: /rename <title>" });
   });
 
   it('[UT-10] "/sessions" → sessions', () => {

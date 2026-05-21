@@ -1,6 +1,6 @@
-# Unit tests: TUI stream projection helpers
+# Unit tests: TUI pure helpers
 
-> **Source spec:** `docs/spec/tool-input-streaming/design.md` under `## Test Strategy`.
+> **Source specs:** `docs/spec/tool-input-streaming/design.md` and `docs/spec/slash-command-palette/design.md`.
 >
 > **Test files under:** `packages/tui/src/lib/*.test.ts`
 >
@@ -8,7 +8,7 @@
 
 ## What this module tests
 
-These tests pin pure TUI helpers that keep provider-facing history canonical while projecting live UI state: the history accumulator ignores UI-only events, live tool-input placeholders update and clear locally, and formatting stays terse enough for a single TUI row.
+These tests pin pure TUI helpers that keep provider-facing history canonical while projecting live UI state. They also cover slash-command metadata and command-palette state transitions so command discovery stays testable outside Ink.
 
 ## Test cases
 
@@ -21,6 +21,8 @@ These tests pin pure TUI helpers that keep provider-facing history canonical whi
 | UT-T3 | Given `tool-input-end`, when applied to live state, then the placeholder becomes executing and formats accordingly. | `packages/tui/src/lib/live-tool-inputs.test.ts`, `packages/tui/src/lib/format-tool-call.test.ts` |
 | UT-T4 | Given a matching formal `tool-call`, when applied to live state, then the placeholder is removed. | `packages/tui/src/lib/live-tool-inputs.test.ts` |
 | UT-T5 | Given stale placeholders and `tool-result` or `tool-error`, when applied to live state, then matching placeholders are defensively removed. | `packages/tui/src/lib/live-tool-inputs.test.ts` |
+| UT-1 | Given command metadata, when read, then every built-in slash command is present. | `packages/tui/src/lib/commands.test.ts` |
+| UT-5..12 | Given command-palette state, when opened, filtered, moved, or activated, then it follows the slash-command palette contract. | `packages/tui/src/lib/command-palette.test.ts` |
 
 ## Prerequisites
 
@@ -52,7 +54,7 @@ None — tests run hermetically against pure functions.
 ### Run every test in this module
 
 ```bash
-pnpm --filter @lordcode/tui test -- src/lib/history-accumulator.test.ts src/lib/format-tool-call.test.ts src/lib/live-tool-inputs.test.ts
+pnpm --filter @lordcode/tui test -- src/lib
 ```
 
 Expected: every UT-N PASS. No warnings, no stderr noise.
@@ -82,7 +84,7 @@ pnpm --filter @lordcode/tui exec vitest run --coverage src/lib/history-accumulat
 
 ## Expected output
 
-- All UT-A and UT-T cases from the table above PASS.
+- All cases from the table above PASS.
 - No warnings, deprecated-API noise, or stderr leaks.
 
 ## Related files
@@ -90,7 +92,10 @@ pnpm --filter @lordcode/tui exec vitest run --coverage src/lib/history-accumulat
 - `packages/tui/src/lib/history-accumulator.ts`
 - `packages/tui/src/lib/live-tool-inputs.ts`
 - `packages/tui/src/lib/format-tool-call.ts`
+- `packages/tui/src/lib/commands.ts`
+- `packages/tui/src/lib/command-palette.ts`
 - `packages/tui/src/components/App.tsx`
 - `packages/shared/src/api.ts`
 - `docs/spec/tool-input-streaming/design.md`
+- `docs/spec/slash-command-palette/design.md`
 - `harness-kit:tdd/SKILL.md`
