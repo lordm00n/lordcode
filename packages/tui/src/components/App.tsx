@@ -32,9 +32,12 @@ import {
   activateSelectedCommand,
   closeCommandPalette,
   COMMAND_PALETTE_MAX_ROWS,
+  COMMAND_PALETTE_PANEL_BACKGROUND,
   filterCommandPalette,
   moveCommandPaletteSelection,
   openCommandPalette,
+  openModelPalette,
+  openSessionPalette,
   type CommandPaletteState,
 } from "../lib/command-palette.js";
 import { tryParsePastedImage } from "../lib/clipboard-image.js";
@@ -59,7 +62,6 @@ import {
   closeSessionPicker,
   deleteSelectedSession,
   moveSessionPickerSelection,
-  openSessionPicker,
   selectedSessionDetails,
   type SessionPickerState,
 } from "../lib/session-picker.js";
@@ -196,7 +198,8 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     try {
       const m = await api.listModels();
       setModels(m);
-      pushSystem("info", formatModelsList(m));
+      setSessionPicker(null);
+      setCommandPalette(openModelPalette(m));
     } catch (err) {
       log.error("/models failed", err);
       pushSystem(
@@ -231,7 +234,8 @@ export function App({ api, baseUrl, onExit }: AppProps) {
     log.debug("/sessions requested");
     try {
       const res = await api.listSessions();
-      setSessionPicker(openSessionPicker(res.sessions));
+      setSessionPicker(null);
+      setCommandPalette(openSessionPalette(res.sessions));
     } catch (err) {
       log.error("/sessions failed", err);
       pushSystem(
@@ -253,6 +257,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         },
       ]);
       setSessionPicker(null);
+      setCommandPalette(null);
     } catch (err) {
       log.error("/new failed", err);
       pushSystem(
@@ -295,6 +300,7 @@ export function App({ api, baseUrl, onExit }: AppProps) {
           },
         ]);
         setSessionPicker(null);
+        setCommandPalette(null);
       } catch (err) {
         log.error("session activation failed", err);
         pushSystem(
@@ -311,7 +317,8 @@ export function App({ api, baseUrl, onExit }: AppProps) {
       try {
         await api.deleteSession(sessionId);
         const res = await api.listSessions();
-        setSessionPicker(openSessionPicker(res.sessions));
+        setSessionPicker(null);
+        setCommandPalette(openSessionPalette(res.sessions));
         pushSystem("info", `Deleted session: ${sessionId}`);
       } catch (err) {
         log.error("session deletion failed", err);
@@ -681,17 +688,47 @@ export function App({ api, baseUrl, onExit }: AppProps) {
         return;
       }
       if (key.return) {
-        const action = activateSelectedCommand(commandPalette);
-        setCommandPalette(null);
-        if (action.kind === "execute") {
-          cmdLog.debug("command palette execute", { input: action.input });
-          executeSubmittedInput(action.input);
-        } else if (action.kind === "complete-input") {
-          cmdLog.debug("command palette complete", { input: action.input });
-          setInput({ value: action.input, cursor: action.input.length });
+        if (commandPalette.mode === "commands") {
+          const action = activateSelectedCommand(commandPalette);
+          setCommandPalette(null);
+          if (action.kind === "execute") {
+            cmdLog.debug("command palette execute", { input: action.input });
+            executeSubmittedInput(action.input);
+          } else if (action.kind === "complete-input") {
+            cmdLog.debug("command palette complete", { input: action.input });
+            setInput({ value: action.input, cursor: action.input.length });
+          } else {
+            cmdLog.warn("command palette activation without selection");
+            executeSubmittedInput(input.value);
+          }
+        } else if (commandPalette.mode === "models") {
+          const selected = commandPalette.modelList[commandPalette.selectedIndex];
+          if (selected != null) {
+            setCommandPalette(null);
+            void handleSetModel(selected.name);
+          }
         } else {
-          cmdLog.warn("command palette activation without selection");
-          executeSubmittedInput(input.value);
+          const pickerState: SessionPickerState = {
+            sessions: commandPalette.sessionList,
+            selectedIndex: commandPalette.selectedIndex,
+          };
+          const action = activateSelectedSession(pickerState, streaming != null);
+          if (action.kind === "refuse") {
+            pushSystem("error", action.reason);
+          } else if (action.kind === "activate") {
+            void handleActivateSession(action.sessionId);
+          }
+        }
+        return;
+      }
+      if (commandPalette.mode === "sessions" && char === "d" && !key.ctrl && !key.meta) {
+        const pickerState: SessionPickerState = {
+          sessions: commandPalette.sessionList,
+          selectedIndex: commandPalette.selectedIndex,
+        };
+        const action = deleteSelectedSession(pickerState);
+        if (action.kind === "delete") {
+          void handleDeleteSession(action.sessionId);
         }
         return;
       }
@@ -958,30 +995,42 @@ function CommandPaletteOverlay({
         width={panelWidth}
         borderStyle="round"
         borderColor="gray"
+        backgroundColor={COMMAND_PALETTE_PANEL_BACKGROUND}
         paddingX={1}
       >
-        <Box justifyContent="space-between">
-          <Text color="cyan" bold>
-            Commands
-          </Text>
-          <Text dimColor>/{state.query}</Text>
-        </Box>
-        {visibleCommands.length === 0 ? (
-          <Text dimColor>
-            {state.allCommands.length === 0
-              ? "No commands"
-              : "No matching commands"}
-          </Text>
+        {state.mode === "commands" ? (
+          <>
+            <Box justifyContent="space-between">
+              <Text color="cyan" bold>
+                Commands
+              </Text>
+              <Text dimColor>/{state.query}</Text>
+            </Box>
+            {visibleCommands.length === 0 ? (
+              <Text dimColor>
+                {state.allCommands.length === 0
+                  ? "No commands"
+                  : "No matching commands"}
+              </Text>
+            ) : (
+              visibleCommands.map((command, index) => (
+                <CommandPaletteRow
+                  key={`${command.source}:${command.name}`}
+                  command={command}
+                  selected={firstVisibleIndex + index === state.selectedIndex}
+                />
+              ))
+            )}
+            <Text dimColor>Up/Down select · Enter · Esc</Text>
+          </>
+        ) : state.mode === "models" ? (
+          <ModelPaletteView state={state} firstVisibleIndex={firstVisibleIndex} />
         ) : (
-          visibleCommands.map((command, index) => (
-            <CommandPaletteRow
-              key={`${command.source}:${command.name}`}
-              command={command}
-              selected={firstVisibleIndex + index === state.selectedIndex}
-            />
-          ))
+          <SessionPaletteView
+            state={state}
+            firstVisibleIndex={firstVisibleIndex}
+          />
         )}
-        <Text dimColor>Up/Down select · Enter · Esc</Text>
       </Box>
     </Box>
   );
@@ -1000,6 +1049,104 @@ function CommandPaletteRow({
       <Text color={selected ? "cyan" : undefined}>{command.usage}</Text>
       <Text dimColor> · {command.description}</Text>
     </Box>
+  );
+}
+
+function ModelPaletteView({
+  state,
+  firstVisibleIndex,
+}: {
+  state: CommandPaletteState;
+  firstVisibleIndex: number;
+}) {
+  const visibleModels = state.modelList.slice(
+    firstVisibleIndex,
+    firstVisibleIndex + COMMAND_PALETTE_MAX_ROWS,
+  );
+
+  return (
+    <>
+      <Box justifyContent="space-between">
+        <Text color="cyan" bold>
+          Models
+        </Text>
+        <Text dimColor>{state.currentModel ?? "<none>"}</Text>
+      </Box>
+      {visibleModels.length === 0 ? (
+        <Text dimColor>no models configured. edit ~/.lordcode/config.json</Text>
+      ) : (
+        visibleModels.map((model, index) => (
+          <ModelPaletteRow
+            key={model.name}
+            model={model}
+            current={model.name === state.currentModel}
+            selected={firstVisibleIndex + index === state.selectedIndex}
+          />
+        ))
+      )}
+      <Text dimColor>Up/Down select · Enter switch · Esc</Text>
+    </>
+  );
+}
+
+function ModelPaletteRow({
+  model,
+  current,
+  selected,
+}: {
+  model: ModelsListResponse["models"][number];
+  current: boolean;
+  selected: boolean;
+}) {
+  const keyHint =
+    model.apiKeySource === "env"
+      ? `key:env(${model.apiKeyEnv ?? "?"})`
+      : model.apiKeySource === "plain"
+        ? "key:plain"
+        : "key:missing";
+  return (
+    <Box>
+      <Text color={selected ? "cyan" : undefined}>{selected ? "> " : "  "}</Text>
+      <Text color={selected ? "cyan" : undefined}>{model.name}</Text>
+      <Text dimColor>
+        {" "}
+        · {model.provider} · {model.model}
+        {current ? " · current" : ""} · {keyHint}
+      </Text>
+    </Box>
+  );
+}
+
+function SessionPaletteView({
+  state,
+  firstVisibleIndex,
+}: {
+  state: CommandPaletteState;
+  firstVisibleIndex: number;
+}) {
+  const visibleSessions = state.sessionList.slice(
+    firstVisibleIndex,
+    firstVisibleIndex + COMMAND_PALETTE_MAX_ROWS,
+  );
+
+  return (
+    <>
+      <Text color="cyan" bold>
+        Sessions
+      </Text>
+      {visibleSessions.length === 0 ? (
+        <Text dimColor>No sessions for this project</Text>
+      ) : (
+        visibleSessions.map((session, index) => (
+          <SessionPickerRow
+            key={session.id}
+            session={session}
+            selected={firstVisibleIndex + index === state.selectedIndex}
+          />
+        ))
+      )}
+      <Text dimColor>Up/Down select · Enter resume · d delete · Esc</Text>
+    </>
   );
 }
 
@@ -1196,22 +1343,4 @@ function formatThinkingDuration(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
-}
-
-function formatModelsList(m: ModelsListResponse): string {
-  if (m.models.length === 0) {
-    return "no models configured. edit ~/.lordcode/config.json";
-  }
-  return m.models
-    .map((mod) => {
-      const isCurrent = mod.name === m.current ? " · current" : "";
-      const keyHint =
-        mod.apiKeySource === "env"
-          ? `key:env(${mod.apiKeyEnv ?? "?"})`
-          : mod.apiKeySource === "plain"
-            ? "key:plain"
-            : "key:missing";
-      return `${mod.name} (${mod.provider} · ${mod.model}${isCurrent} · ${keyHint})`;
-    })
-    .join("\n");
 }

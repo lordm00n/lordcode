@@ -23,6 +23,7 @@ These tests pin pure TUI helpers that keep provider-facing history canonical whi
 | UT-T5 | Given stale placeholders and `tool-result` or `tool-error`, when applied to live state, then matching placeholders are defensively removed. | `packages/tui/src/lib/live-tool-inputs.test.ts` |
 | UT-1 | Given command metadata, when read, then every built-in slash command is present. | `packages/tui/src/lib/commands.test.ts` |
 | UT-5..12 | Given command-palette state, when opened, filtered, moved, or activated, then it follows the slash-command palette contract. | `packages/tui/src/lib/command-palette.test.ts` |
+| UT-13..16 | Given command-palette list content, when model/session lists open or move, then the palette uses an opaque panel and selects within the active list. | `packages/tui/src/lib/command-palette.test.ts` |
 
 ## Prerequisites
 
